@@ -6,9 +6,16 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "dependencies": {
+    "lodash": "^4.17.15",
+    "concentrate2": "^1.0.0"
+  },
   "keywords": [
     "signalk-node-server-plugin"
   ],
-  "author": {"name": "Matti Airas", "email": "mairas@iki.fi"},
+  "author": {
+    "name": "Matti Airas",
+    "email": "mairas@iki.fi"
+  },
   "license": "MIT"
 }
