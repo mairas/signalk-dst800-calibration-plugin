@@ -17,6 +17,69 @@ module.exports = function (app) {
   plugin.name = 'Airmar DST800 calibration settings';
   plugin.description = 'Set a DST800 triducer in-device calibration values';
 
+  function setDepthOffset(dst, offset) {
+    let cmd_msg = {
+      pgn: 126208,
+      dst: options.instance,
+      prio: 3,
+      fields: {
+        "Function Code": "Command",
+        "PGN": 128267,
+        "Priority": 8,
+        //"Reserved": 8,
+        "# of Parameters": 1,
+        "list": [
+          {
+            "Parameter": 3,
+            "Value": 1000 * offset
+          }
+        ]
+      }
+    }
+    app.debug('Changing depth offset')
+    app.emit('nmea2000JsonOut', cmd_msg)
+  }
+  
+  function setDST800AccessLevel(dst) {
+    // only supports setting access level to 1
+    const pgn = 126208
+    const prio = 3
+    const now = (new Date()).toISOString()
+
+    const msg = `${now},${prio},${pgn},00,${dst},00`
+      + ",01"  // Command
+      + ",07,ff,00" // Commanded PGN: 65287 - Proprietary: Access Level
+      + ",f8"  // Priority: Leave unchanged
+      + ",05"  // number of parameter pairs
+      + ",01,87,00" // Manufacturer Code: Airmar
+      + ",03,04" // Industry Group: Marine Industry
+      + ",04,01" // Format Code: 1
+      + ",05,01" // Access Level: 1
+      + ",07,78,56,34,12"  // Seed: 0x12345678
+
+      app.debug("Setting DST800 Access Level to 1")
+      app.emit('nmea2000out', msg)
+  }
+
+  function requestSTWCalibrationCurve(dst) {
+    const pgn = 126208
+    const prio = 3
+    const now = (new Date()).toISOString()
+
+    const msg = `${now},${prio},${pgn},00,${dst},00`
+      + ",00"  // Request
+      + ",00,ef,01" // Requested PGN: 126720
+      + ",ff,ff,ff,ff"  // Transmission interval: immediate/no change
+      + ",ff,ff"  // Transm. interv. offset: immediate/no change
+      + ",03"  // number of parameter pairs
+      + ",01,87,00" // Manufacturer Code: Airmar
+      + ",03,04" // Industry Group: Marine Industry
+      + ",04,29"  // Proprietary ID: Calibrate Speed (0x29==41)
+
+    app.debug("Requesting speed calibration information")
+    app.emit('nmea2000out', msg)
+  }
+
   plugin.start = function (options, restartPlugin) {
     // Here we put our plugin logic
     app.debug('DST800 plugin started');
@@ -48,6 +111,12 @@ module.exports = function (app) {
         else if (msg.pgn == 126208  // Acknowledge Group Function
           && fields['Function Code'] == "Acknowledge"
           && fields['PGN'] == 126720) {
+            let msg_str = JSON.stringify(msg, null, 2)
+            app.debug(`Acknowledge Group Function: ${msg_str}`)
+        }
+        else if (msg.pgn == 126208  // Acknowledge Group Function
+          && fields['Function Code'] == "Acknowledge"
+          && fields['PGN'] == 65287) {
             let msg_str = JSON.stringify(msg, null, 2)
             app.debug(`Acknowledge Group Function: ${msg_str}`)
         }
@@ -84,26 +153,7 @@ module.exports = function (app) {
       if ( typeof options.instance === 'undefined' || typeof options.depth_offset.value === 'undefined' ) {
         console.error("address or depth offset is not defined")
       } else {
-        let cmd_msg = {
-          pgn: 126208,
-          dst: options.instance,
-          prio: 3,
-          fields: {
-            "Function Code": "Command",
-            "PGN": 128267,
-            "Priority": 8,
-            //"Reserved": 8,
-            "# of Parameters": 1,
-            "list": [
-              {
-                "Parameter": 3,
-                "Value": 1000 * options.depth_offset.value
-              }
-            ]
-          }
-        }
-        app.debug('Changing depth offset')
-        app.emit('nmea2000JsonOut', cmd_msg)
+        setDepthOffset(options.instance, options.depth_offset.value)
         options.depth_offset.set_value = false
         app.savePluginOptions(options, () => {app.debug('DST 800 plugin options saved')});
       }
@@ -113,44 +163,8 @@ module.exports = function (app) {
       if ( typeof options.instance === 'undefined' ) {
         console.error("address is not defined")
       } else {
-        const pgn = 126208
-        const dst = options.instance
-        const prio = 3
-        const now = (new Date()).toISOString()
-
-        const msg = `${now},${prio},${pgn},0,${dst}`
-          + ",00"  // number of data bytes, auto-filled by canboatjs
-          + ",02"  // number parameter pairs
-          + ",01,87,98" // Company and industry in short-hand form
-          + ",04,29"  // speed (0x29==41)
-
-        // unused for now
-        // let req_pgn_obj = {
-        //   pgn: 126208,
-        //   dst: options.instance,
-        //   //prio: 3,
-        //   fields: {
-        //     "Function Code": "Request",
-        //     "PGN": 126720,
-        //     "# of Parameters": 3,
-        //     "list": [
-        //       {
-        //         "Parameter": 1,  // Manufacturer Code
-        //         "Value": 135   // Airmar Technology
-        //       },
-        //       {
-        //         "Parameter": 3,  // Industry Group
-        //         "Value": 4  // Marine Industry
-        //       },
-        //       {
-        //         "Parameter": 4,  // Proprietary ID
-        //         "Value": 41  // Calibrate Speed
-        //       }
-        //     ]
-        //   }
-        // }
-        app.debug("Requesting speed calibration information")
-        app.emit('nmea2000out', msg)
+        setDST800AccessLevel(options.instance)
+        requestSTWCalibrationCurve(options.instance)
         options.speed_through_water.request_value = false
         // need to save options to update the request_value field change above
         app.savePluginOptions(options, () => {app.debug('DST 800 plugin options saved')});
