@@ -103,6 +103,24 @@ module.exports = function (app) {
     app.emit('nmea2000out', msg)
   }
 
+  function enableSpeedPulseCount(dst, interval) {
+    const pgn = 126208
+    const prio = 3
+    const now = (new Date()).toISOString()
+
+    const msg = `${ now },${ prio },${ pgn },00,${ dst },00`
+      + ",00"  // Request
+      + ",81,ff,00" // Requested PGN: 65409
+      + "," + uint32le(1000 * interval)  // Transmission interval: immediate/no change
+      + ",00,00"  // Transm. interv. offset: immediate/no change
+      + ",02"  // number of parameter pairs
+      + ",01,87,00" // Manufacturer Code: Airmar
+      + ",03,04" // Industry Group: Marine Industry
+
+    app.debug("Setting speed pulse count transmit interval to 2s")
+    app.emit('nmea2000out', msg)
+  }
+
   function requestSTWCalibrationCurve(dst) {
     const pgn = 126208
     const prio = 3
@@ -171,23 +189,6 @@ module.exports = function (app) {
     app.emit('nmea2000out', msg)
   }
 
-  function enableSpeedPulseCount(dst) {
-    const pgn = 126208
-    const prio = 3
-    const now = (new Date()).toISOString()
-
-    const msg = `${ now },${ prio },${ pgn },00,${ dst },00`
-      + ",00"  // Request
-      + ",81,ff,00" // Requested PGN: 65409
-      + ",d0,07,00,00"  // Transmission interval: immediate/no change
-      + ",00,00"  // Transm. interv. offset: immediate/no change
-      + ",02"  // number of parameter pairs
-      + ",01,87,00" // Manufacturer Code: Airmar
-      + ",03,04" // Industry Group: Marine Industry
-
-    app.debug("Setting speed pulse count transmit interval to 2s")
-    app.emit('nmea2000out', msg)
-  }
   plugin.start = async function (options, restartPlugin) {
     // Here we put our plugin logic
     app.debug('DST800 plugin started');
@@ -289,7 +290,7 @@ module.exports = function (app) {
     }
 
     if (options.speed_pulse_count && options.speed_pulse_count.enable) {
-      enableSpeedPulseCount(options.instance)
+      enableSpeedPulseCount(options.instance, options.speed_pulse_count.interval)
     }
 
     if (options.speed_through_water && options.speed_through_water.set_value) {
@@ -353,6 +354,12 @@ module.exports = function (app) {
             title: "Enable",
             type: 'boolean',
             default: false
+          },
+          interval: {
+            title: "Transmission interval",
+            description: "How often the PGN should be sent, in seconds",
+            type: "number",
+            default: 2.0
           }
         }
       },
