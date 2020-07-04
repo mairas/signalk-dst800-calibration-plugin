@@ -217,6 +217,23 @@ module.exports = function (app) {
             app.savePluginOptions(options, () => { app.debug('DST 800 plugin options saved') });
           }
         }
+        else if (msg.pgn == 65409) {  // Speed Pulse Count
+          const num_pulses = fields['Number of pulses received']
+          const duration = fields['Duration of interval']
+          const pulse_rate = num_pulses / duration
+          app.handleMessage('signalk-dst800-calibration-plugin', {
+            updates: [
+              {
+                values: [
+                  {
+                    path: "navigation.speedSensorPulseRate",
+                    value: pulse_rate
+                  }
+                ]
+              }
+            ]
+          })
+        }
         else if (msg.pgn == 126208  // Acknowledge Group Function
           && fields['Function Code'] == "Acknowledge"
           && fields['PGN'] == 126720) {
