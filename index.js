@@ -140,6 +140,25 @@ module.exports = function (app) {
     app.emit('nmea2000out', msg)
   }
 
+  function resetSTWCalibrationCurve(dst) {
+    const pgn = 126208
+    const prio = 3
+    const now = (new Date()).toISOString()
+
+    const msg = `${ now },${ prio },${ pgn },00,${ dst },00`
+      + ",01"  // Command
+      + ",00,ef,01" // Requested PGN: 126720
+      + ",f8"  // Priority: Leave unchanged
+      + ",04"  // number of parameter pairs
+      + ",01,87,00" // Manufacturer Code: Airmar
+      + ",03,04" // Industry Group: Marine Industry
+      + ",04,29" // Proprietary ID: Calibrate Speed (0x29==41)
+      + ",05,fe" // Number of data points
+
+    app.debug("Resetting STW calibration pairs to factory defaults")
+    app.emit('nmea2000out', msg)
+  }
+
   function setSTWCalibrationCurve(dst, values) {
     const pgn = 126208
     const prio = 3
@@ -170,22 +189,43 @@ module.exports = function (app) {
     app.emit('nmea2000out', full_msg)
   }
 
-  function resetSTWCalibrationCurve(dst) {
+  function requestTemperatureOffset(dst) {
+    const pgn = 126208
+    const prio = 3
+    const now = (new Date()).toISOString()
+
+    const msg = `${ now },${ prio },${ pgn },00,${ dst },00`
+      + ",00"  // Request
+      + ",00,ef,01" // Requested PGN: 126720
+      + ",ff,ff,ff,ff"  // Transmission interval: immediate/no change
+      + ",ff,ff"  // Transm. interv. offset: immediate/no change
+      + ",04"  // number of parameter pairs
+      + ",01,87,00" // Manufacturer Code: Airmar
+      + ",03,04" // Industry Group: Marine Industry
+      + ",04,2a"  // Proprietary ID: Calibrate Temperature (0x2a==42)
+      + ",05,01"  // Onboard Water Sensor
+
+    app.debug("Requesting temperature offset information")
+    app.emit('nmea2000out', msg)
+  }
+
+  function setTemperatureOffset(dst, offset) {
     const pgn = 126208
     const prio = 3
     const now = (new Date()).toISOString()
 
     const msg = `${ now },${ prio },${ pgn },00,${ dst },00`
       + ",01"  // Command
-      + ",00,ef,01" // Requested PGN: 126720
+      + ",00,ef,01" // Commanded PGN: 126720
       + ",f8"  // Priority: Leave unchanged
-      + ",04"  // number of parameter pairs
+      + ",05"  // number of parameter pairs
       + ",01,87,00" // Manufacturer Code: Airmar
       + ",03,04" // Industry Group: Marine Industry
-      + ",04,29" // Proprietary ID: Calibrate Speed (0x29==41)
-      + ",05,fe" // Number of data points
+      + ",04,2a" // Proprietary ID: Calibrate Temperature (0x2a==42)
+      + ",05,01"  // Onboard water sensor
+      + ",07," + uint16le(offset)  // Temperature offset
 
-    app.debug("Resetting STW calibration pairs to factory defaults")
+    app.debug("Setting STW calibration pairs")
     app.emit('nmea2000out', msg)
   }
 
@@ -292,6 +332,10 @@ module.exports = function (app) {
       }
     }
 
+    if (options.speed_pulse_count && options.speed_pulse_count.enable) {
+      enableSpeedPulseCount(options.instance, options.speed_pulse_count.interval)
+    }
+
     if (options.speed_through_water && options.speed_through_water.request_value) {
       if (typeof options.instance === 'undefined') {
         console.error("address is not defined")
@@ -306,8 +350,16 @@ module.exports = function (app) {
       }
     }
 
-    if (options.speed_pulse_count && options.speed_pulse_count.enable) {
-      enableSpeedPulseCount(options.instance, options.speed_pulse_count.interval)
+    if (options.speed_through_water && options.speed_through_water.restore_defaults) {
+      setDST800AccessLevel(options.instance)
+      // sleep for a second to allow the access level request to go through
+      await new Promise(r => setTimeout(r, 1000));
+
+      resetSTWCalibrationCurve(options.instance)
+
+      options.speed_through_water.restore_defaults = false
+      // need to save options to update the restore_defaults field change above
+      app.savePluginOptions(options, () => { app.debug('DST 800 plugin options saved') });
     }
 
     if (options.speed_through_water && options.speed_through_water.set_value) {
@@ -325,15 +377,29 @@ module.exports = function (app) {
       app.savePluginOptions(options, () => { app.debug('DST 800 plugin options saved') });
     }
 
-    if (options.speed_through_water && options.speed_through_water.restore_defaults) {
+    if (options.temperature_offset && options.temperature_offset.request_value) {
+      if (typeof options.instance === 'undefined') {
+        console.error("address is not defined")
+      } else {
+        setDST800AccessLevel(options.instance)
+        // sleep for a second to allow the access level request to go through
+        await new Promise(r => setTimeout(r, 1000));
+        requestTemperatureOffset(options.instance)
+        options.temperature_offset.request_value = false
+        // need to save options to update the request_value field change above
+        app.savePluginOptions(options, () => { app.debug('DST 800 plugin options saved') });
+      }
+    }
+
+    if (options.temperature_offset && options.temperature_offset.set_value) {
       setDST800AccessLevel(options.instance)
       // sleep for a second to allow the access level request to go through
       await new Promise(r => setTimeout(r, 1000));
 
-      resetSTWCalibrationCurve(options.instance)
+      setTemperatureOffset(options.instance, options.temperature_offset.value)
 
-      options.speed_through_water.restore_defaults = false
-      // need to save options to update the restore_defaults field change above
+      options.temperature_offset.set_value = false
+      // need to save options to update the set_value field change above
       app.savePluginOptions(options, () => { app.debug('DST 800 plugin options saved') });
     }
 
@@ -362,24 +428,6 @@ module.exports = function (app) {
         description: "This is the NMEA 2000 address of your transducer.",
         type: "number"
       },
-      speed_pulse_count: {
-        title: "Speed pulse count",
-        type: "object",
-        description: "Enable reporting of speed pulse counts for STW calibration purposes",
-        properties: {
-          enable: {
-            title: "Enable",
-            type: 'boolean',
-            default: false
-          },
-          interval: {
-            title: "Transmission interval",
-            description: "How often the PGN should be sent, in seconds",
-            type: "number",
-            default: 2.0
-          }
-        }
-      },
       depth_offset: {
         title: "Depth offset",
         type: "object",
@@ -398,6 +446,24 @@ module.exports = function (app) {
           value: {
             title: 'Offset, in meters',
             type: 'number'
+          }
+        }
+      },
+      speed_pulse_count: {
+        title: "Speed pulse count",
+        type: "object",
+        description: "Enable reporting of speed pulse counts for STW calibration purposes",
+        properties: {
+          enable: {
+            title: "Enable",
+            type: 'boolean',
+            default: false
+          },
+          interval: {
+            title: "Transmission interval",
+            description: "How often the PGN should be sent, in seconds",
+            type: "number",
+            default: 2.0
           }
         }
       },
@@ -423,7 +489,29 @@ module.exports = function (app) {
           },
           value: {
             title: 'Values',
-            description: 'Enter values as rows of space-delimited pulse rate/STW pairs, in 1/s and m/s',
+            description: 'Enter values as rows of space-delimited pairs of pulse rate and STW, in 1/s and m/s',
+            type: 'string'
+          }
+        }
+      },
+      temperature_offset: {
+        title: "Temperature offset",
+        type: "object",
+        description: "Offset to be added to the sensor temperature reading",
+        properties: {
+          request_value: {
+            title: 'Request the stored offset value from the device',
+            type: 'boolean',
+            default: false
+          },
+          set_value: {
+            title: 'Store the offset value on the device',
+            type: 'boolean',
+            default: false
+          },
+          value: {
+            title: 'Value',
+            description: 'Offset value, in K (or °C)',
             type: 'string'
           }
         }
