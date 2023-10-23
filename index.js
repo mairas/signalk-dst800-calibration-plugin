@@ -1,7 +1,8 @@
 "use strict"
 
 const _ = require('lodash')
-const Concentrate2 = require('concentrate2')
+
+const pgnToActisenseSerialFormat = require("@canboat/canboatjs").pgnToActisenseSerialFormat;
 
 
 function paddb(n, p, c) {
@@ -73,12 +74,14 @@ module.exports = function (app) {
         "list": [
           {
             "Parameter": 3,
-            "Value": 1000 * offset
+            "Value": offset
           }
         ]
       }
     }
-    app.debug('Changing depth offset')
+    const rawMsg = pgnToActisenseSerialFormat(cmd_msg);
+    app.debug('Changing depth offset to', offset)
+    app.debug(`raw message: ${rawMsg}`);
     app.emit('nmea2000JsonOut', cmd_msg)
   }
 
@@ -160,33 +163,66 @@ module.exports = function (app) {
   }
 
   function setSTWCalibrationCurve(dst, values) {
-    const pgn = 126208
-    const prio = 3
-    const now = (new Date()).toISOString()
+    const data_point_parameters = values.flatMap(
+      (r, idx) => (
+        [
+          {
+            "Parameter": 6 + 2 * idx,
+            "Value": r[0]  // Pulse Frequency (Hz)
+          },
+          {
+            "Parameter": 6 + 2 * idx + 1,
+            "Value": r[1]  // Speed (m/s)
+          },
+        ]
+      )
+    );
 
-    const msg = `${ now },${ prio },${ pgn },00,${ dst },00`
-      + ",01"  // Command
-      + ",00,ef,01" // Commanded PGN: 126720
-      + ",f8"  // Priority: Leave unchanged
-      + "," + paddb(2 * values.length + 4, 2)  // number of parameter pairs
-      + ",01,87,00" // Manufacturer Code: Airmar
-      + ",03,04" // Industry Group: Marine Industry
-      + ",04,29" // Proprietary ID: Calibrate Speed (0x29==41)
-      + ",05," + paddb(values.length, 2) // Number of data points
+    app.debug("Data points:", JSON.stringify(data_point_parameters, null, 2));
 
-    let pairs = ""
-    for (let i = 0; i < values.length; i++) {
-      let field_idx = 6 + 2 * i
-      // frequency
-      let freq = values[i][0]
-      let stw = values[i][1]
-      pairs += "," + paddb(field_idx, 2) + "," + uint16le(freq * 10)
-        + "," + paddb(field_idx + 1, 2) + "," + uint16le(stw * 100)
+    const parameters = [].concat(
+      [
+        {
+          "Parameter": 1,  // Manufacturer Code
+          "Value": 135     // Airmar
+        },
+        {
+          "Parameter": 3,  // Industry Code
+          "Value": 4       // Marine Industry  
+        },
+        {
+          "Parameter": 4,  // Proprietary ID
+          "Value": 41      // Calibrate Speed
+        },
+        {
+          "Parameter": 5,  // Number of pairs of data points to follow
+          "Value": values.length
+        }
+      ],
+      data_point_parameters
+    );
+
+    app.debug("Parameters:", JSON.stringify(parameters, null, 2));
+
+    const cmd_msg = {
+      pgn: 126208,  // NMEA - Command group function
+      dst: dst,
+      prio: 3,
+      fields: {
+        "Function Code": "Command",
+        "PGN": 126720,
+        "Priority": 8,
+        "Number of Parameters": 4 + 2 * values.length,
+        "list": parameters
+      }
     }
-    const full_msg = msg + pairs
+
+    app.debug("Command message:", JSON.stringify(cmd_msg, null, 2));
 
     app.debug("Setting STW calibration pairs")
-    app.emit('nmea2000out', full_msg)
+    const raw_msg = pgnToActisenseSerialFormat(cmd_msg);
+    app.debug("raw message:", raw_msg);
+    app.emit('nmea2000out', raw_msg)
   }
 
   function requestTemperatureOffset(dst) {
