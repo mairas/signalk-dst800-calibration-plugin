@@ -34,12 +34,39 @@ export enum EepromResetOption {
   UniqueNumber = 4
 }
 
-/** Parameter numbers shared by every proprietary parameter list. */
+/**
+ * Parameter numbers.
+ *
+ * A parameter number is a field index within the *target* PGN, so the same
+ * number means different things in different messages. The first three are
+ * shared by every proprietary list; the rest are named per PGN.
+ */
 export const PARAM = {
   manufacturerCode: 1,
   industryCode: 3,
-  proprietaryId: 4
+  proprietaryId: 4,
+  /** PGN 65287 Access Level. */
+  accessFormatCode: 4,
+  accessLevel: 5,
+  accessSeedKey: 7,
+  /** PGN 126720-41 Calibrate Speed field 5. */
+  curvePointCount: 5
 } as const
+
+/** PGN 126720-41: the first of the repeating frequency and speed pairs. */
+export const CURVE_FIRST_PAIR_PARAM = 6
+
+/** PGN 126720-41 field 5 allows at most 25 points. */
+export const MAX_CURVE_POINTS = 25
+
+/** PGN 126720-41 field 6: uint16 at 0.1 Hz. */
+export const MAX_CURVE_HZ = 6553.2
+
+/** PGN 126720-41 field 7: uint16 at 0.01 m/s. */
+export const MAX_CURVE_SPEED = 655.32
+
+/** canboatjs resolves the proprietary ID lookup to this name in a reply. */
+export const CALIBRATE_SPEED_NAME = 'Calibrate Speed'
 
 /** Field 5 of PGN 126720-41: restore the factory default curve. */
 export const RESTORE_DEFAULT_CURVE = 0xfe
@@ -64,48 +91,35 @@ export const PGN = {
 } as const
 
 /**
- * Proprietary IDs 1 and 130 have no @canboat/ts-pgns definition, so canboatjs
- * drops the proprietary ID as not-available and both encode to the same wrong
- * frame. These definitions are registered with canboatjs at module load.
+ * Actisense payload bytes for the two messages canboatjs cannot encode.
  *
- * They are also the only two Airmar messages sent as a bare addressed 126720
- * rather than wrapped in a 126208 Command Group Function.
+ * Proprietary IDs 1 and 130 have no @canboat/ts-pgns definition, so canboatjs
+ * drops the proprietary ID and both encode to the same wrong frame, 87,98,ff.
+ *
+ * Registering custom definitions was tried and rejected. canboatjs keeps one
+ * module-scoped registry, and a plugin installed under the server's config
+ * directory resolves its own copy: definitions registered there never reach
+ * the copy that encodes what the plugin emits. Worse, where the copy *is*
+ * shared, the registration corrupts every other 126720 in the process —
+ * `identityFields` carrying no Description makes canboatjs's string-match
+ * filter treat the definitions as wildcards, so an Airmar Simulate Mode
+ * command from any other component encodes as this Master Reset frame, and a
+ * Garmin 126720 has its manufacturer rewritten to Airmar.
+ *
+ * These two frames are six fixed bytes each, derived from the manual's field
+ * tables, so they are built directly and sent on `nmea2000out`, which the
+ * provider passes through without re-encoding.
+ *
+ * Byte 0 is the low 8 bits of the 11-bit manufacturer code 135. Byte 1 packs
+ * its remaining 3 bits, the 2 reserved bits set to 1, and the 3-bit industry
+ * code 4. Byte 2 is the proprietary ID. The remainder is the reserved tail,
+ * padded with ones, with the EEPROM option in the low nibble of byte 3.
  */
-const identityFields = (proprietaryId: number) => [
-  { Id: 'manufacturerCode', BitLength: 11, Match: AIRMAR.manufacturerCode, FieldType: 'LOOKUP' },
-  { Id: 'reserved', BitLength: 2, FieldType: 'RESERVED' },
-  { Id: 'industryCode', BitLength: 3, Match: AIRMAR.industryCode, FieldType: 'LOOKUP' },
-  { Id: 'proprietaryId', BitLength: 8, Match: proprietaryId, FieldType: 'LOOKUP' }
-]
+const AIRMAR_IDENTITY_BYTES = '87,98'
 
-export const CUSTOM_PGNS = {
-  PGNs: [
-    {
-      PGN: PGN.proprietary,
-      Id: 'airmarMasterReset',
-      Description: 'Airmar: Master Reset',
-      Type: 'Fast',
-      Complete: true,
-      FieldCount: 5,
-      Length: 6,
-      Fields: [
-        ...identityFields(AirmarPid.MasterReset),
-        { Id: 'reserved5', BitLength: 24, FieldType: 'RESERVED' }
-      ]
-    },
-    {
-      PGN: PGN.proprietary,
-      Id: 'airmarResetEeprom',
-      Description: 'Airmar: Reset EEPROM',
-      Type: 'Fast',
-      Complete: true,
-      FieldCount: 6,
-      Length: 6,
-      Fields: [
-        ...identityFields(AirmarPid.ResetEeprom),
-        { Id: 'options', BitLength: 4, FieldType: 'LOOKUP' },
-        { Id: 'reserved6', BitLength: 20, FieldType: 'RESERVED' }
-      ]
-    }
-  ]
+export const MASTER_RESET_PAYLOAD = `${AIRMAR_IDENTITY_BYTES},01,ff,ff,ff`
+
+export function eepromResetPayload(option: EepromResetOption): string {
+  const nibble = (0xf0 | (option & 0x0f)).toString(16)
+  return `${AIRMAR_IDENTITY_BYTES},82,${nibble},ff,ff`
 }
