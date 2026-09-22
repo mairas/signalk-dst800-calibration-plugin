@@ -40,7 +40,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # Node 24 ships npm 11, the same npm publish-npm.yml requires. On the
+          # npm 10 that ships with Node 22, `npm pack --ignore-scripts` still
+          # runs the prepare script, whose build log lands on stdout ahead of
+          # the JSON this suite parses.
+          node-version: '24'
       - run: npm ci
       - run: npm run test:packaging
 
