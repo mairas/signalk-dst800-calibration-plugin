@@ -1,0 +1,46 @@
+name: Main branch release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Required: release-version.yml computes the next revision from existing tags,
+# so two concurrent runs would compute the same one.
+concurrency:
+  group: ${{ github.repository }}-main-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Staging a release is gated on the full cross-platform matrix, not on a
+  # Linux-only subset. See the pin rationale in pr.yml.
+  checks:
+    permissions:
+      contents: read
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@591e56a05b4f90952991f4e6c9d81be751394660
+    with:
+      test-command: npm run ci
+      build-command: npm run build && npm run build:ui
+      node-versions: '["22", "24"]'
+      enable-armv7: false
+      enable-signalk-integration: false
+
+  version:
+    needs: checks
+    uses: halos-org/shared-workflows/.github/workflows/release-version.yml@v1.0.0-rc.1
+
+  # Notes-only releases: publishing the draft starts release.yml.
+  stage-release:
+    needs: version
+    permissions:
+      contents: write
+    uses: halos-org/shared-workflows/.github/workflows/stage-release.yml@v1.0.0-rc.1
+    with:
+      package-name: signalk-airmar-dst-config
+      package-description: Interactive configuration console for Airmar DST-family NMEA 2000 depth, speed and temperature sensors.
+      debian-version: ${{ needs.version.outputs.debian-version }}
+      prerelease-tag: ${{ needs.version.outputs.prerelease-tag }}
+      stable-tag: ${{ needs.version.outputs.stable-tag }}

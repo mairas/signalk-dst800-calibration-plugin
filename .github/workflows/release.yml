@@ -1,67 +1,21 @@
-# Publishes to npmjs.com with Trusted Publishing (OIDC). No NPM_TOKEN.
+# The npm package's trusted publisher must name this file, release.yml.
+# publish-npm.yml serializes publishes itself; do not add a concurrency group
+# named <repository>-publish-npm-job here.
 #
-# Publish runs only after a push to the default branch (normally a merged PR)
-# and only when package.json's version is not already on the registry.
-#
-# One-time setup, by the package owner with 2FA:
-#   npx -y npm@latest trust github signalk-airmar-dst-config \
-#     --file release.yml \
-#     --repository mairas/signalk-dst800-calibration-plugin \
-#     --allow-publish
-# Docs: https://docs.npmjs.com/trusted-publishers/
-
-name: Release
+# Publishing is a deliberate act: main.yml stages a draft release, and
+# publishing that draft starts this workflow. Merging to main does not publish.
+name: Publish stable release
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Publish to npm (default branch only)'
-        required: false
-        default: false
-        type: boolean
-  push:
-    branches:
-      - master
+  release:
+    types: [published]
+
+permissions:
+  contents: read
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  publish-npm:
     permissions:
-      id-token: write
       contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          # Node 24 ships npm 11.5.1+, required for OIDC trusted publishing.
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-      - name: Ensure npm CLI supports trusted publishing
-        run: npm install -g npm@latest
-      - name: Remove setup-node auth token placeholder
-        # registry-url writes //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}.
-        # An empty placeholder makes npm skip OIDC and fail with ENEEDAUTH.
-        run: |
-          NPMRC_PATH="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
-          if [ -f "$NPMRC_PATH" ]; then
-            sed -i '/_authToken/d' "$NPMRC_PATH"
-          fi
-      - run: npm ci
-      - run: npm run ci
-      - name: Resolve package version
-        id: pkg
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if npm view "signalk-airmar-dst-config@${VERSION}" version >/dev/null 2>&1; then
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Skip publish (already on npm)
-        if: ${{ github.ref == 'refs/heads/master' && steps.pkg.outputs.already_published == 'true' }}
-        run: echo "signalk-airmar-dst-config@${{ steps.pkg.outputs.version }} is already on npm; nothing to publish."
-      - name: Publish to npm
-        if: ${{ github.ref == 'refs/heads/master' && steps.pkg.outputs.already_published == 'false' && (github.event_name == 'push' || inputs.publish == true) }}
-        run: npm publish --access public
+      id-token: write
+    uses: halos-org/shared-workflows/.github/workflows/publish-npm.yml@v1.0.0-rc.1

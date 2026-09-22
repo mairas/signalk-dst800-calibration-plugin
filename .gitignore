@@ -8,8 +8,6 @@ public/
 # Coverage reports
 coverage/
 
-# Local-only artifacts (plans, brainstorms, notes)
-_local/
 
 # IDE
 .idea/
