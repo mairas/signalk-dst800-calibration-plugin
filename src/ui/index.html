@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Airmar DST Config</title>
+    <script>
+      // Inherit the Signal K admin UI stylesheet so the console looks native.
+      // The manifest is served from 2.27 onwards; failure is not fatal.
+      fetch('/admin/.vite/manifest.json')
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no manifest'))))
+        .then((manifest) => {
+          for (const entry of Object.values(manifest)) {
+            for (const css of entry.css ?? []) {
+              const link = document.createElement('link')
+              link.rel = 'stylesheet'
+              link.href = `/admin/${css}`
+              document.head.appendChild(link)
+            }
+          }
+        })
+        .catch(() => {
+          /* styling falls back to the page's own CSS */
+        })
+    </script>
+  </head>
+  <body>
+    <dst-app></dst-app>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

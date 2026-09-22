@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: true
+  commands:
+    typecheck:
+      glob: "*.ts"
+      run: npm run typecheck
+      fail_text: "TypeScript type checking failed. Run 'npm run typecheck' to see errors."
+    lint:
+      glob: "*.ts"
+      run: npm run lint
+      fail_text: "ESLint found issues. Run 'npm run lint:fix' to auto-fix."
+    format:
+      glob: "*.ts"
+      run: npm run format:check
+      fail_text: "Prettier formatting issues. Run 'npm run format' to fix."
