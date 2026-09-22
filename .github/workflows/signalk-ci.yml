@@ -1,0 +1,53 @@
+# Calls the shared Signal K plugin workflow, which tests the plugin across
+# Linux, macOS and Windows on Node 22 and 24, validates package.json, checks
+# the entry point and plugin.schema(), runs a stop/start lifecycle test, scans
+# for deprecated APIs and checks the npm pack file list.
+#
+# armv7 (Cerbo GX) and the Signal K integration test are opt-in; the automatic
+# job leaves them off. Use the manual trigger to enable them for a run.
+
+name: SignalK Plugin CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+    inputs:
+      enable-armv7:
+        description: Run armv7 (Cerbo GX) tests via QEMU
+        required: false
+        default: false
+        type: boolean
+      enable-signalk-integration:
+        description: Start a Signal K server and install the plugin
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  test-plugin-auto:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
+    with:
+      test-command: npm test
+      build-command: npm run build && npm run build:ui
+      format-check-command: npm run format:check
+      node-versions: '["22", "24"]'
+      enable-armv7: false
+      enable-signalk-integration: false
+
+  test-plugin-manual:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
+    with:
+      test-command: npm test
+      build-command: npm run build && npm run build:ui
+      format-check-command: npm run format:check
+      node-versions: '["22", "24"]'
+      enable-armv7: ${{ inputs.enable-armv7 }}
+      enable-signalk-integration: ${{ inputs.enable-signalk-integration }}
+      signalk-server-versions: '["latest"]'
