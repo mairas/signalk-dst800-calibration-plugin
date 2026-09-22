@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { PLUGIN_ID } from '../src/index.js'
 
 /**
@@ -18,8 +19,19 @@ interface PackageManifest {
   name: string
   version: string
   files: string[]
+  dependencies?: Record<string, string>
+  peerDependencies?: Record<string, string>
   signalk?: { screenshots?: string[]; appIcon?: string }
 }
+
+const jsFilesUnder = (dir: string): string[] =>
+  readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) {
+      return jsFilesUnder(path)
+    }
+    return path.endsWith('.js') ? [path] : []
+  })
 
 const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as PackageManifest
 let paths: string[]
@@ -70,6 +82,25 @@ describe('published package contents', () => {
     for (const entry of manifest.files) {
       expect(paths.some((p) => p === entry || p.startsWith(`${entry}/`))).toBe(true)
     }
+  })
+
+  it('imports nothing at runtime that it does not declare', () => {
+    // A devDependency imported by shipped code resolves in this repo and
+    // nowhere on a device: the server installs a plugin without its dev tree,
+    // and the plugin throws at load. The tarball test cannot see it, because
+    // it only lists files.
+    const declared = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {})
+    ])
+    const imports = jsFilesUnder('dist').flatMap((file) =>
+      [...readFileSync(file, 'utf8').matchAll(/from ['"]([^'"]+)['"]/g)].map((m) => m[1])
+    )
+    const external = imports.filter((spec) => !spec.startsWith('.'))
+    const scope = (spec: string) =>
+      spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]
+
+    expect(external.map(scope).filter((pkg) => !declared.has(pkg))).toEqual([])
   })
 
   it('ships every screenshot and icon its Signal K metadata names', () => {

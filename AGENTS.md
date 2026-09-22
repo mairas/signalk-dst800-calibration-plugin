@@ -49,15 +49,19 @@ Use `./run`, never `npm` directly, and never a Makefile. `./run help` lists ever
 
 ## NMEA 2000
 
-The protocol layer does not exist yet — these are the rules it will be held to, established while planning and verified against canboatjs 3.20.0 and `@canboat/ts-pgns` 1.11.11.
+The wire layer is `src/protocol/`. `codec.ts` builds and reads messages, `pids.ts` holds the protocol constants, `messages.ts` declares the three shapes that cross the server boundary, and `n2kAdapter.ts` is the only file that widens the app type — `nmea2000out`, `nmea2000JsonOut` and `N2KAnalyzerOut` are real but untyped, and the server widens its own type the same way.
 
-Encode every Request and Command Group Function as canboatjs JSON and emit it on `nmea2000JsonOut`. Receive decoded PGNs on `N2KAnalyzerOut`. Do not hand-build Actisense strings: canboatjs produces byte-identical output for every message the old plugin sent, which the codec tests will pin against captured bytes.
+Build group functions as canboatjs JSON and emit them on `nmea2000JsonOut`. canboatjs produces byte-identical output to a hand-built Actisense string for every such message, and the codec tests pin three of them against the manual's worked examples.
 
-Always lead a PGN 126720 parameter list with parameter 1 (manufacturer code 135) and parameter 4 (the proprietary ID). canboatjs narrows the 126720 variant by those match fields and throws `unable to read` without them.
+Always lead a PGN 126720 parameter list with parameter 1 (manufacturer code 135) and parameter 4 (the proprietary ID), in that order. canboatjs narrows the 126720 variant by those match fields as it walks the list, and throws an opaque `unable to read` when they are absent or come after the fields they narrow. `assertIdentity` turns that into a named failure.
 
-Proprietary IDs 1 (master reset) and 130 (EEPROM restore) have no `@canboat/ts-pgns` definition. Both currently encode to the same wrong frame, `87,98,ff`, with the proprietary ID dropped as not-available, so they need a custom definition or a hand-built frame. They are also sent as PGN 126720 addressed to the device, not wrapped in a 126208 Command.
+**Proprietary IDs 1 (master reset) and 130 (EEPROM restore) are fixed byte strings sent on `nmea2000out`.** They have no `@canboat/ts-pgns` definition, and registering custom ones was tried and rejected for two independent reasons. canboatjs keeps one module-scoped registry, so a plugin installed under the server's config directory registers into a copy the server's encoder never reads. And where the copy is shared, the registration corrupts every other 126720 in the process: definitions whose match fields carry no `Description` act as wildcards, so another component's Airmar Simulate Mode command encodes as a device reboot and a Garmin 126720 has its manufacturer rewritten. These two frames are six fixed bytes each; `sendN2kRaw` passes them through untouched.
 
-`N2KAnalyzerOut`, `nmea2000out` and `nmea2000JsonOut` are not part of the typed `ServerAPI`. Reach them through one adapter module so that a server change breaks one file.
+The plugin has **no runtime dependencies**. Everything canboatjs does happens inside the server. A packaging test fails if shipped code imports anything the manifest does not declare — that check exists because an undeclared canboatjs import would resolve in this repo and nowhere on a device.
+
+Validate before encoding, never clamp. canboatjs truncates silently: an out-of-range frequency wraps into a plausible one, and `NaN` — what an empty number input yields — defeats every comparison and stores as zero. A clamped point is still a curve the user did not ask for, written to EEPROM, with no error from the device.
+
+Treat any acknowledgement code that is not the literal string `Acknowledge` as a failure, including numbers. canboatjs leaves a lookup it cannot name as a raw number, and the error fields are wider than the enumerated values, so defaulting the unknown case to success reports a refused command as applied.
 
 ## HTTP routes
 

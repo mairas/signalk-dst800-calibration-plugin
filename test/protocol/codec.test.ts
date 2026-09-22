@@ -1,0 +1,440 @@
+import { describe, it, expect, beforeAll } from 'vitest'
+import { pgnToActisenseSerialFormat, FromPgn } from '@canboat/canboatjs'
+import type { PGN } from '@canboat/ts-pgns'
+import type { DecodedPgn, OutgoingPgn } from '../../src/protocol/messages.js'
+import { CALIBRATE_SPEED_NAME } from '../../src/protocol/pids.js'
+import type { CurvePoint } from '../../src/protocol/codec.js'
+import {
+  AirmarPid,
+  EepromResetOption,
+  MAX_CURVE_HZ,
+  MAX_CURVE_POINTS,
+  MAX_CURVE_SPEED,
+  assertIdentity,
+  commandProprietary,
+  commandStandardField,
+  decodeAcknowledge,
+  decodeSpeedCurve,
+  masterReset,
+  requestSpeedCurve,
+  resetEeprom,
+  restoreDefaultSpeedCurve,
+  setSpeedCurve,
+  unlockLevel1
+} from '../../src/protocol/codec.js'
+
+const DST = 35
+
+/**
+ * canboatjs types its encoder against an abstract PGN class, while both this
+ * codec and the server's own code pass plain object literals. One cast, here.
+ */
+const encode = (message: OutgoingPgn) => pgnToActisenseSerialFormat(message as unknown as PGN)
+
+/** The Actisense line minus its prefix: timestamp, prio, pgn, src, dst, len. */
+const payload = (message: OutgoingPgn) => encode(message).split(',').slice(6).join(',')
+
+/**
+ * canboatjs cannot reassemble a single-line fast packet as a parser's very
+ * first input, so prime it once. Without this the suite is order-dependent:
+ * a `-t` filter that runs a 126720 case first sees a spurious failure.
+ */
+const parser = new FromPgn()
+beforeAll(() => {
+  parser.parseString(encode(requestSpeedCurve(DST)))
+})
+const decode = (message: OutgoingPgn) =>
+  parser.parseString(encode(message)) as unknown as DecodedPgn
+
+describe('addressing', () => {
+  it.each([
+    ['request', () => requestSpeedCurve(DST)],
+    ['command', () => restoreDefaultSpeedCurve(DST)],
+    ['standard field command', () => commandStandardField(DST, 128267, [])],
+    ['unlock', () => unlockLevel1(DST)]
+  ])('addresses a %s to the device, not the bus', (_name, build) => {
+    // A broadcast write reaches every Airmar sensor on the bus.
+    expect(build()).toMatchObject({ dst: DST, prio: 3, pgn: 126208 })
+  })
+
+  it.each([
+    ['master reset', () => masterReset(DST)],
+    ['eeprom reset', () => resetEeprom(DST, EepromResetOption.Priorities)]
+  ])('addresses a %s as a bare 126720', (_name, build) => {
+    expect(build()).toMatchObject({ dst: DST, prio: 3, pgn: 126720 })
+  })
+})
+
+describe('encoding', () => {
+  it('unlocks Access Level 1 with the documented password', () => {
+    expect(payload(unlockLevel1(DST))).toBe(
+      '01,07,ff,00,f8,05,01,87,00,03,04,04,01,05,01,07,78,56,34,12'
+    )
+  })
+
+  it('requests the speed calibration curve', () => {
+    expect(payload(requestSpeedCurve(DST))).toBe(
+      '00,00,ef,01,ff,ff,ff,ff,ff,ff,03,01,87,00,03,04,04,29'
+    )
+    expect(decode(requestSpeedCurve(DST)).fields?.functionCode).toBe('Request')
+  })
+
+  it('restores the factory default curve', () => {
+    expect(payload(restoreDefaultSpeedCurve(DST))).toBe(
+      '01,00,ef,01,f8,04,01,87,00,03,04,04,29,05,fe'
+    )
+  })
+
+  it('writes curve pairs at the documented parameter numbers and resolutions', () => {
+    // The manual's worked example: 12.2 Hz -> 1.93 m/s, 75.0 Hz -> 5.14 m/s,
+    // stored as raw 122/193 and 750/514, at parameters 6/7 and 8/9.
+    expect(
+      payload(
+        setSpeedCurve(DST, [
+          { hz: 12.2, speed: 1.93 },
+          { hz: 75.0, speed: 5.14 }
+        ])
+      )
+    ).toBe('01,00,ef,01,f8,08,01,87,00,03,04,04,29,05,02,06,7a,00,07,c1,00,08,ee,02,09,02,02')
+  })
+
+  it('commands rather than requests when writing a standard PGN field', () => {
+    const decoded = decode(commandStandardField(DST, 128267, [{ parameter: 3, value: -0.3 }]))
+    interface Pair {
+      parameter: number
+      value: number
+    }
+    const fields = decoded.fields as { pgn: number; functionCode: string; list: Pair[] }
+
+    expect(fields.functionCode).toBe('Command')
+    expect(fields.pgn).toBe(128267)
+    expect(fields.list.map((p) => ({ parameter: p.parameter, value: p.value }))).toEqual([
+      { parameter: 3, value: -0.3 }
+    ])
+  })
+
+  it('commands rather than requests when writing a proprietary field', () => {
+    const decoded = decode(commandProprietary(DST, AirmarPid.SimulateMode, []))
+
+    expect(decoded.fields?.functionCode).toBe('Command')
+  })
+
+  it.each([
+    ['master reset', () => masterReset(DST), '87,98,01,ff,ff,ff'],
+    ['eeprom wipe', () => resetEeprom(DST, EepromResetOption.All), '87,98,82,f0,ff,ff'],
+    ['eeprom rates', () => resetEeprom(DST, EepromResetOption.UpdateRates), '87,98,82,f2,ff,ff'],
+    ['eeprom priorities', () => resetEeprom(DST, EepromResetOption.Priorities), '87,98,82,f1,ff,ff']
+  ])('builds the %s frame from fixed bytes', (_name, build, expected) => {
+    expect(build().payload).toBe(expected)
+  })
+
+  it('round-trips a group function through the decoder as the right function', () => {
+    expect(decode(unlockLevel1(DST)).fields?.functionCode).toBe('Command')
+    expect(decode(requestSpeedCurve(DST)).fields?.functionCode).toBe('Request')
+  })
+})
+
+describe('identity guard', () => {
+  const check = (params: { parameter: number; value: number }[]) => () => {
+    assertIdentity(params)
+  }
+
+  it('accepts a list that leads with the identifying pairs', () => {
+    expect(
+      check([
+        { parameter: 1, value: 135 },
+        { parameter: 3, value: 4 },
+        { parameter: 4, value: 41 },
+        { parameter: 5, value: 1 }
+      ])
+    ).not.toThrow()
+  })
+
+  it('rejects a list that omits the manufacturer code', () => {
+    expect(check([{ parameter: 4, value: 41 }])).toThrow(/manufacturer/i)
+  })
+
+  it('rejects an empty list', () => {
+    expect(check([])).toThrow(/manufacturer/i)
+  })
+
+  it('rejects a list that omits the proprietary ID', () => {
+    expect(
+      check([
+        { parameter: 1, value: 135 },
+        { parameter: 3, value: 4 }
+      ])
+    ).toThrow(/proprietary/i)
+  })
+
+  it('rejects a narrowed field placed before the proprietary ID', () => {
+    // canboatjs resolves the variant as it walks the list, so order matters.
+    expect(
+      check([
+        { parameter: 1, value: 135 },
+        { parameter: 5, value: 1 },
+        { parameter: 4, value: 41 }
+      ])
+    ).toThrow(/must precede/i)
+  })
+})
+
+describe('curve validation', () => {
+  const point = { hz: 10, speed: 1 }
+
+  it('rejects an empty curve', () => {
+    expect(() => setSpeedCurve(DST, [])).toThrow(/1 to 25/)
+  })
+
+  it(`rejects more than ${String(MAX_CURVE_POINTS)} points`, () => {
+    const many = Array.from({ length: MAX_CURVE_POINTS + 1 }, (_, i) => ({ hz: i + 1, speed: 1 }))
+    expect(() => setSpeedCurve(DST, many)).toThrow(/1 to 25/)
+  })
+
+  it(`accepts exactly ${String(MAX_CURVE_POINTS)} points`, () => {
+    const many = Array.from({ length: MAX_CURVE_POINTS }, (_, i) => ({ hz: i + 1, speed: 1 }))
+    expect(() => setSpeedCurve(DST, many)).not.toThrow()
+  })
+
+  it('rejects a descending frequency', () => {
+    expect(() => setSpeedCurve(DST, [{ hz: 20, speed: 1 }, point])).toThrow(/must increase/)
+  })
+
+  it.each([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['negative', -5],
+    ['above the field range', MAX_CURVE_HZ + 0.1]
+  ])('rejects a %s frequency', (_name, hz) => {
+    // NaN defeats every comparison, so the monotonic guard cannot see it, and
+    // an out-of-range value truncates to 16 bits rather than erroring.
+    expect(() => setSpeedCurve(DST, [{ hz, speed: 1 }])).toThrow(/frequency must be between/)
+  })
+
+  it.each([
+    ['NaN', NaN],
+    ['negative', -1],
+    ['above the field range', MAX_CURVE_SPEED + 0.01]
+  ])('rejects a %s speed', (_name, speed) => {
+    expect(() => setSpeedCurve(DST, [{ hz: 10, speed }])).toThrow(/speed must be between/)
+  })
+
+  it('rejects points that collide at the stored resolution', () => {
+    // 12.2 and 12.24 Hz both store as 122, giving a zero-width segment.
+    expect(() =>
+      setSpeedCurve(DST, [
+        { hz: 12.2, speed: 1 },
+        { hz: 12.24, speed: 2 }
+      ])
+    ).toThrow(/stored 0.1 Hz resolution/)
+  })
+})
+
+describe('eeprom reset validation', () => {
+  it.each([16, 0.5, -1, 7])('rejects %s, which truncates onto a real option', (option) => {
+    expect(() => resetEeprom(DST, option)).toThrow(/not an EEPROM reset option/)
+  })
+})
+
+describe('decoding a curve reply', () => {
+  /**
+   * A real device reply, built by encoding a 126720 and parsing it back.
+   *
+   * Hand-writing the fixture is what hid the original defect: the decoder read
+   * `numberOfPairsOfDataPointsToFollow`, which canboatjs never emits, and the
+   * fixture invented the same name — so the test asserted the code against
+   * itself while the trim never ran.
+   */
+  const realReply = (points: CurvePoint[], declared = points.length): DecodedPgn => {
+    const line = pgnToActisenseSerialFormat({
+      pgn: 126720,
+      dst: 255,
+      prio: 7,
+      fields: {
+        manufacturerCode: 'Airmar',
+        industryCode: 'Marine Industry',
+        proprietaryId: CALIBRATE_SPEED_NAME,
+        numberOfPairsOfDataPoints: declared,
+        list: points.map((point) => ({ inputFrequency: point.hz, outputSpeed: point.speed }))
+      }
+    } as unknown as PGN)
+    return parser.parseString(line) as unknown as DecodedPgn
+  }
+
+  it('reads the points the device reports', () => {
+    const reply = realReply([
+      { hz: 12.2, speed: 1.93 },
+      { hz: 75.0, speed: 5.14 }
+    ])
+
+    expect(reply.fields).toHaveProperty('numberOfPairsOfDataPoints')
+    expect(decodeSpeedCurve(reply)).toEqual([
+      { hz: 12.2, speed: 1.93 },
+      { hz: 75.0, speed: 5.14 }
+    ])
+  })
+
+  it('drops the padding rows the device pads its list with', () => {
+    const reply = realReply(
+      [
+        { hz: 12.2, speed: 1.93 },
+        { hz: 75.0, speed: 5.14 },
+        { hz: 0, speed: 0 },
+        { hz: 0, speed: 0 }
+      ],
+      2
+    )
+
+    expect(decodeSpeedCurve(reply)).toEqual([
+      { hz: 12.2, speed: 1.93 },
+      { hz: 75.0, speed: 5.14 }
+    ])
+  })
+
+  it('trims a list longer than the declared count', () => {
+    // canboatjs already bounds the repeating set by the count field, so this
+    // is defensive — but it is the only case where reading the wrong field
+    // name changes the answer, which is how the original defect hid.
+    const reply: DecodedPgn = {
+      pgn: 126720,
+      fields: {
+        proprietaryId: CALIBRATE_SPEED_NAME,
+        numberOfPairsOfDataPoints: 1,
+        list: [
+          { inputFrequency: 12.2, outputSpeed: 1.93 },
+          { inputFrequency: 0, outputSpeed: 0 },
+          { inputFrequency: 0, outputSpeed: 0 }
+        ]
+      }
+    }
+
+    expect(decodeSpeedCurve(reply)).toEqual([{ hz: 12.2, speed: 1.93 }])
+  })
+
+  it('clamps a count larger than the list', () => {
+    const reply: DecodedPgn = {
+      pgn: 126720,
+      fields: {
+        proprietaryId: CALIBRATE_SPEED_NAME,
+        numberOfPairsOfDataPoints: 5,
+        list: [{ inputFrequency: 12.2, outputSpeed: 1.93 }]
+      }
+    }
+
+    expect(decodeSpeedCurve(reply)).toHaveLength(1)
+  })
+
+  it('falls back to the list when no count is declared', () => {
+    const reply: DecodedPgn = {
+      pgn: 126720,
+      fields: {
+        proprietaryId: CALIBRATE_SPEED_NAME,
+        list: [{ inputFrequency: 12.2, outputSpeed: 1.93 }]
+      }
+    }
+
+    expect(decodeSpeedCurve(reply)).toHaveLength(1)
+  })
+
+  it.each([
+    ['a different PGN', { pgn: 65409, fields: { proprietaryId: CALIBRATE_SPEED_NAME, list: [] } }],
+    ['a different proprietary ID', { pgn: 126720, fields: { proprietaryId: 'Simulate Mode' } }]
+  ])('returns null for %s', (_name, reply) => {
+    expect(decodeSpeedCurve(reply as DecodedPgn)).toBeNull()
+  })
+})
+
+describe('decoding an acknowledgement', () => {
+  const ack = (fields: Record<string, unknown>): DecodedPgn => ({
+    pgn: 126208,
+    src: DST,
+    fields: { functionCode: 'Acknowledge', pgn: 126720, ...fields }
+  })
+
+  it('reads a clean acknowledgement as success', () => {
+    const result = decodeAcknowledge(
+      ack({
+        pgnErrorCode: 'Acknowledge',
+        transmissionIntervalPriorityErrorCode: 'Acknowledge',
+        list: [{ parameter: 'Acknowledge' }]
+      })
+    )
+
+    expect(result).toEqual({
+      acknowledgedPgn: 126720,
+      src: DST,
+      ok: true,
+      pgnError: 'Acknowledge',
+      intervalPriorityError: 'Acknowledge',
+      parameterErrors: []
+    })
+  })
+
+  it('reports which parameter the device rejected', () => {
+    const result = decodeAcknowledge(
+      ack({
+        list: [
+          { parameter: 'Acknowledge' },
+          { parameter: 'Parameter out of range' },
+          { parameter: 'Acknowledge' }
+        ]
+      })
+    )
+
+    expect(result?.ok).toBe(false)
+    expect(result?.parameterErrors).toEqual([{ index: 2, error: 'Parameter out of range' }])
+  })
+
+  it.each(['PGN not supported', 'Access denied', 'Not supported'])(
+    'surfaces a %s rejection',
+    (code) => {
+      const result = decodeAcknowledge(ack({ pgnErrorCode: code }))
+
+      expect(result?.ok).toBe(false)
+      expect(result?.pgnError).toBe(code)
+    }
+  )
+
+  it('fails on an error code canboatjs cannot name', () => {
+    // PGN_ERROR_CODE enumerates 0-6 while the field is four bits wide, so a
+    // reserved or vendor code arrives as a number. Defaulting that to success
+    // would report a refused command as applied.
+    const result = decodeAcknowledge(ack({ pgnErrorCode: 7 }))
+
+    expect(result?.ok).toBe(false)
+    expect(result?.pgnError).toBe('Unknown code 7')
+  })
+
+  it('fails when the device rejects the priority or interval', () => {
+    const result = decodeAcknowledge(
+      ack({ transmissionIntervalPriorityErrorCode: 'Transmit Interval too low' })
+    )
+
+    expect(result?.ok).toBe(false)
+    expect(result?.intervalPriorityError).toBe('Transmit Interval too low')
+  })
+
+  it('reports an uncorrelatable reply rather than inventing a PGN', () => {
+    const result = decodeAcknowledge({
+      pgn: 126208,
+      src: DST,
+      fields: { functionCode: 'Acknowledge' }
+    })
+
+    expect(result?.acknowledgedPgn).toBeUndefined()
+  })
+
+  it.each([
+    [
+      'a 126208 that is not an acknowledgement',
+      { pgn: 126208, fields: { functionCode: 'Request' } }
+    ],
+    [
+      'a 126720 carrying an Acknowledge field',
+      { pgn: 126720, fields: { functionCode: 'Acknowledge' } }
+    ],
+    ['an unrelated PGN', { pgn: 65409, fields: {} }]
+  ])('ignores %s', (_name, message) => {
+    expect(decodeAcknowledge(message as DecodedPgn)).toBeNull()
+  })
+})

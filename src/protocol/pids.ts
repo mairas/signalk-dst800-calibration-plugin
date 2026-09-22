@@ -1,0 +1,125 @@
+/**
+ * Airmar proprietary protocol constants.
+ *
+ * Every proprietary message is identified by manufacturer code 135 and
+ * industry code 4, then by a Proprietary ID. A PGN 126720 parameter list that
+ * omits the manufacturer and proprietary-ID pairs cannot be encoded: canboatjs
+ * narrows the 126720 variant by those match fields.
+ */
+export const AIRMAR = {
+  manufacturerCode: 135,
+  industryCode: 4
+} as const
+
+/** Proprietary IDs carried in PGN 126720 field 4. */
+export enum AirmarPid {
+  MasterReset = 1,
+  SimulateMode = 35,
+  CalibrateDepth = 40,
+  CalibrateSpeed = 41,
+  CalibrateTemperature = 42,
+  SpeedFilter = 43,
+  TemperatureFilter = 44,
+  Nmea2000Options = 46,
+  ResetEeprom = 130
+}
+
+/** PGN 126720-130 field 5. */
+export enum EepromResetOption {
+  /** Everything except the unique number, including the speed calibration curve. */
+  All = 0,
+  Priorities = 1,
+  UpdateRates = 2,
+  PrioritiesAndUpdateRates = 3,
+  UniqueNumber = 4
+}
+
+/**
+ * Parameter numbers.
+ *
+ * A parameter number is a field index within the *target* PGN, so the same
+ * number means different things in different messages. The first three are
+ * shared by every proprietary list; the rest are named per PGN.
+ */
+export const PARAM = {
+  manufacturerCode: 1,
+  industryCode: 3,
+  proprietaryId: 4,
+  /** PGN 65287 Access Level. */
+  accessFormatCode: 4,
+  accessLevel: 5,
+  accessSeedKey: 7,
+  /** PGN 126720-41 Calibrate Speed field 5. */
+  curvePointCount: 5
+} as const
+
+/** PGN 126720-41: the first of the repeating frequency and speed pairs. */
+export const CURVE_FIRST_PAIR_PARAM = 6
+
+/** PGN 126720-41 field 5 allows at most 25 points. */
+export const MAX_CURVE_POINTS = 25
+
+/** PGN 126720-41 field 6: uint16 at 0.1 Hz. */
+export const MAX_CURVE_HZ = 6553.2
+
+/** PGN 126720-41 field 7: uint16 at 0.01 m/s. */
+export const MAX_CURVE_SPEED = 655.32
+
+/** canboatjs resolves the proprietary ID lookup to this name in a reply. */
+export const CALIBRATE_SPEED_NAME = 'Calibrate Speed'
+
+/** Field 5 of PGN 126720-41: restore the factory default curve. */
+export const RESTORE_DEFAULT_CURVE = 0xfe
+
+/** The manual documents this fixed value as the Access Level 1 password. */
+export const ACCESS_LEVEL_1_KEY = 0x12345678
+
+export const PGN = {
+  accessLevel: 65287,
+  depthQualityFactor: 65408,
+  speedPulseCount: 65409,
+  deviceInformation: 65410,
+  groupFunction: 126208,
+  pgnList: 126464,
+  proprietary: 126720,
+  productInformation: 126996,
+  configurationInformation: 126998,
+  speed: 128259,
+  waterDepth: 128267,
+  distanceLog: 128275,
+  post: 130944
+} as const
+
+/**
+ * Actisense payload bytes for the two messages canboatjs cannot encode.
+ *
+ * Proprietary IDs 1 and 130 have no @canboat/ts-pgns definition, so canboatjs
+ * drops the proprietary ID and both encode to the same wrong frame, 87,98,ff.
+ *
+ * Registering custom definitions was tried and rejected. canboatjs keeps one
+ * module-scoped registry, and a plugin installed under the server's config
+ * directory resolves its own copy: definitions registered there never reach
+ * the copy that encodes what the plugin emits. Worse, where the copy *is*
+ * shared, the registration corrupts every other 126720 in the process —
+ * `identityFields` carrying no Description makes canboatjs's string-match
+ * filter treat the definitions as wildcards, so an Airmar Simulate Mode
+ * command from any other component encodes as this Master Reset frame, and a
+ * Garmin 126720 has its manufacturer rewritten to Airmar.
+ *
+ * These two frames are six fixed bytes each, derived from the manual's field
+ * tables, so they are built directly and sent on `nmea2000out`, which the
+ * provider passes through without re-encoding.
+ *
+ * Byte 0 is the low 8 bits of the 11-bit manufacturer code 135. Byte 1 packs
+ * its remaining 3 bits, the 2 reserved bits set to 1, and the 3-bit industry
+ * code 4. Byte 2 is the proprietary ID. The remainder is the reserved tail,
+ * padded with ones, with the EEPROM option in the low nibble of byte 3.
+ */
+const AIRMAR_IDENTITY_BYTES = '87,98'
+
+export const MASTER_RESET_PAYLOAD = `${AIRMAR_IDENTITY_BYTES},01,ff,ff,ff`
+
+export function eepromResetPayload(option: EepromResetOption): string {
+  const nibble = (0xf0 | (option & 0x0f)).toString(16)
+  return `${AIRMAR_IDENTITY_BYTES},82,${nibble},ff,ff`
+}
