@@ -16,24 +16,38 @@ jobs:
   #
   # Pinned to a commit rather than @master: this repository publishes to npm,
   # and a branch ref would let another organisation's push run here unreviewed.
-  # 591e56a0 is SignalK/signalk-server master as of v2.33.0.
+  # 591e56a05b4f90952991f4e6c9d81be751394660 is SignalK/signalk-server master as of v2.33.0.
   checks:
     permissions:
       contents: read
     uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@591e56a05b4f90952991f4e6c9d81be751394660
     with:
-      # npm run ci is typecheck, typecheck:ui, lint, format:check and the
-      # tests, so the gate matches what ./run ci runs locally.
-      test-command: npm run ci
+      # ci:portable is check, unit tests and webapp tests. The packaging suite
+      # shells out to npm and runs in its own Linux job below.
+      test-command: npm run ci:portable
       build-command: npm run build && npm run build:ui
       node-versions: '["22", "24"]'
       enable-armv7: false
       enable-signalk-integration: false
 
+  packaging:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run test:packaging
+
   # Branch protection requires only this job. List every other job in needs,
   # including jobs defined in this file.
   status:
-    needs: [checks]
+    needs: [checks, packaging]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
