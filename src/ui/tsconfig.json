@@ -1,0 +1,23 @@
+{
+  // Lives here, not at the repo root: esbuild resolves compiler options from
+  // the nearest file literally named tsconfig.json, so a root-level ui config
+  // would type-check the webapp under one decorator model while Vite compiled
+  // it under another.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Inherited rootDir is src/; this project also covers test/ui and emits nothing.
+    "rootDir": "../..",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Lit 3 with plain decorated fields needs the legacy model. esbuild reads
+    // these from this file, so tsc and Vite compile the same way.
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false
+  },
+  // test/ui exercises the webapp, so it needs the same DOM lib and decorator
+  // model. The node-side tsconfig.lint.json excludes both.
+  "include": ["**/*.ts", "../../test/ui/**/*.ts"],
+  "exclude": []
+}

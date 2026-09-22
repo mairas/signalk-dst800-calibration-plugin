@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+#
+# usage: ./run command [argument ...]
+#
+# Commands for signalk-airmar-dst-config development.
+#
+
+set -o nounset
+set -o pipefail
+set -o errexit
+
+# Change the current directory to the project root.
+PROJECT_ROOT=${0%/*}
+if [[ $0 != $PROJECT_ROOT && $PROJECT_ROOT != "" ]]; then
+  cd "$PROJECT_ROOT"
+fi
+readonly PROJECT_ROOT=$(pwd)
+
+################################################################################
+# Setup Commands
+
+function deps {
+  #@ Install dependencies
+  #@ Category: Setup
+  npm install
+}
+
+function install-hooks {
+  #@ Install lefthook pre-commit hooks
+  #@ Category: Setup
+  npx lefthook install
+}
+
+################################################################################
+# Build Commands
+
+function build {
+  #@ Build the plugin and the webapp
+  #@ Category: Build
+  npm run build
+  npm run build:ui
+}
+
+function build-plugin {
+  #@ Build the plugin only, into dist/
+  #@ Category: Build
+  npm run build
+}
+
+function build-ui {
+  #@ Build the webapp only, into public/
+  #@ Category: Build
+  npm run build:ui
+}
+
+function dev-ui {
+  #@ Run the Vite dev server for the webapp
+  #@ Category: Build
+  npm run dev:ui
+}
+
+function clean {
+  #@ Remove build output
+  #@ Category: Build
+  rm -rf dist public coverage
+}
+
+################################################################################
+# Quality Commands
+
+# Shadows the bash `test` builtin for this script. Nothing here uses it; use
+# [[ ]] rather than `test` in any new target.
+function test {
+  #@ Run the unit tests
+  #@ Category: Quality
+  npm test
+}
+
+function test-ui {
+  #@ Run the webapp tests
+  #@ Category: Quality
+  npm run test:ui
+}
+
+function test-packaging {
+  #@ Check what the published tarball contains
+  #@ Category: Quality
+  npm run test:packaging
+}
+
+function test-watch {
+  #@ Run the test suite in watch mode
+  #@ Category: Quality
+  npm run test:watch
+}
+
+function coverage {
+  #@ Run the test suite with coverage
+  #@ Category: Quality
+  npm run test:coverage
+}
+
+function lint {
+  #@ Run ESLint
+  #@ Category: Quality
+  npm run lint
+}
+
+function lint-fix {
+  #@ Run ESLint and fix what it can
+  #@ Category: Quality
+  npm run lint:fix
+}
+
+function format {
+  #@ Format sources with Prettier
+  #@ Category: Quality
+  npm run format
+}
+
+function format-check {
+  #@ Check formatting without writing
+  #@ Category: Quality
+  npm run format:check
+}
+
+function typecheck {
+  #@ Type-check the plugin and the webapp
+  #@ Category: Quality
+  npm run typecheck
+  npm run typecheck:ui
+}
+
+function check {
+  #@ Type-check, lint and check formatting
+  #@ Category: Quality
+  npm run check
+}
+
+function ci {
+  #@ Run every check CI runs
+  #@ Category: Quality
+  npm run ci
+}
+
+################################################################################
+# Core Commands
+
+function help {
+  #@ Show this help message
+  #@ Category: Core
+  echo "signalk-airmar-dst-config - Development Commands"
+  echo "==============================================="
+  echo ""
+  echo "Available commands:"
+  echo ""
+
+  # Extract function definitions and their help comments
+  awk '/^function / {
+    fname = $2
+    sub(/[({].*/, "", fname)
+    getline
+    if ($0 ~ /#@/) {
+      desc = $0
+      sub(/.*#@ /, "", desc)
+      sub(/ *$/, "", desc)
+      getline
+      if ($0 ~ /#@ Category:/) {
+        cat = $0
+        sub(/.*Category: /, "", cat)
+        sub(/ *$/, "", cat)
+        if (!seen[cat]++) categories[++cat_count] = cat
+        commands[cat, ++cmd_count[cat]] = fname
+        descriptions[cat, cmd_count[cat]] = desc
+      }
+    }
+  }
+  END {
+    for (i = 1; i <= cat_count; i++) {
+      cat = categories[i]
+      print "\n" cat ":"
+      for (j = 1; j <= cmd_count[cat]; j++) {
+        printf "  %-25s %s\n", commands[cat, j], descriptions[cat, j]
+      }
+    }
+  }' "$0"
+
+  echo ""
+  echo "Usage: ./run <command> [arguments...]"
+  echo ""
+}
+
+################################################################################
+# Commands end.
+
+TIMEFORMAT=$'\nTask completed in %3lR'
+time "${@:-help}"

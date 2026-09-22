@@ -1,0 +1,21 @@
+# The npm package's trusted publisher must name this file, release.yml.
+# publish-npm.yml serializes publishes itself; do not add a concurrency group
+# named <repository>-publish-npm-job here.
+#
+# Publishing is a deliberate act: main.yml stages a draft release, and
+# publishing that draft starts this workflow. Merging to main does not publish.
+name: Publish stable release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish-npm:
+    permissions:
+      contents: read
+      id-token: write
+    uses: halos-org/shared-workflows/.github/workflows/publish-npm.yml@v1.0.0-rc.1

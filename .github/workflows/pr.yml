@@ -1,0 +1,62 @@
+name: PR checks
+
+# No branch filter: a PR stacked on another branch gets checked before it is
+# retargeted to main.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The shared Signal K plugin workflow: validates package.json, the entry
+  # point and plugin.schema(), runs a stop/start lifecycle test, scans for
+  # deprecated APIs, simulates an App Store install and checks the npm pack
+  # file list, across Linux, Linux arm64, macOS and Windows on Node 22 and 24.
+  #
+  # Pinned to a commit rather than @master: this repository publishes to npm,
+  # and a branch ref would let another organisation's push run here unreviewed.
+  # 591e56a05b4f90952991f4e6c9d81be751394660 is SignalK/signalk-server master as of v2.33.0.
+  checks:
+    permissions:
+      contents: read
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@591e56a05b4f90952991f4e6c9d81be751394660
+    with:
+      # ci:portable is check, unit tests and webapp tests. The packaging suite
+      # shells out to npm and runs in its own Linux job below.
+      test-command: npm run ci:portable
+      build-command: npm run build && npm run build:ui
+      node-versions: '["22", "24"]'
+      enable-armv7: false
+      enable-signalk-integration: false
+
+  packaging:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          # Node 24 ships npm 11, the same npm publish-npm.yml requires. On the
+          # npm 10 that ships with Node 22, `npm pack --ignore-scripts` still
+          # runs the prepare script, whose build log lands on stdout ahead of
+          # the JSON this suite parses.
+          node-version: '24'
+      - run: npm ci
+      - run: npm run test:packaging
+
+  # Branch protection requires only this job. List every other job in needs,
+  # including jobs defined in this file.
+  status:
+    needs: [checks, packaging]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$NEEDS"
