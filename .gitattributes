@@ -1,0 +1,8 @@
+# Normalise to LF in the repository and in every working tree. Without this,
+# Windows checks out CRLF, Prettier's format check fails on every file, and the
+# bash `run` script is unrunnable for a Windows contributor.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
