@@ -3,11 +3,11 @@
  * DST-family NMEA 2000 depth, speed and temperature sensors.
  */
 
-import type { IRouter, Request, Response } from 'express'
-import type { Plugin, ServerAPI } from '@signalk/server-api'
-import type { PluginConfig } from './types.js'
+import type { Request, Response } from 'express'
+import type { Plugin, PluginRouter, ServerAPI } from '@signalk/server-api'
+import { parsePluginConfig, type HealthResponse, type PluginConfig } from './types.js'
 
-export type { DeviceKey, PluginConfig } from './types.js'
+export type { DeviceKey, PluginConfig, HealthResponse } from './types.js'
 
 export const PLUGIN_ID = 'signalk-airmar-dst-config'
 
@@ -25,6 +25,7 @@ const configSchema = {
       title: 'Selected device',
       description:
         'Set from the console. Identifies the device by Address Claim, not by source address.',
+      required: ['manufacturerCode', 'uniqueNumber'],
       properties: {
         manufacturerCode: {
           type: 'number',
@@ -39,9 +40,26 @@ const configSchema = {
   }
 }
 
+interface StoredOptions {
+  configuration?: unknown
+}
+
 export default function plugin(app: ServerAPI): Plugin {
-  let config: PluginConfig = {}
   let running = false
+
+  /**
+   * Read the configuration the server currently holds.
+   *
+   * Not a snapshot taken in start(): registerWithRouter runs once at plugin
+   * load, before and independently of start(), and app.savePluginOptions
+   * writes the file without restarting the plugin. A closed-over copy would
+   * report a device the user has just changed, or none at all while the plugin
+   * is disabled.
+   */
+  const currentConfig = (): PluginConfig => {
+    const stored = app.readPluginOptions() as StoredOptions
+    return parsePluginConfig(stored.configuration)
+  }
 
   return {
     id: PLUGIN_ID,
@@ -51,21 +69,26 @@ export default function plugin(app: ServerAPI): Plugin {
 
     schema: () => configSchema,
 
-    start(options: object) {
-      config = options
+    start() {
       running = true
       app.setPluginStatus('Started')
     },
 
     stop() {
       running = false
-      config = {}
       app.setPluginStatus('Stopped')
     },
 
-    registerWithRouter(router: IRouter) {
-      router.get('/api/health', (_req: Request, res: Response) => {
-        res.json({ running, selectedDevice: config.selectedDevice ?? null })
+    registerWithRouter(router: PluginRouter) {
+      // Read routes are readonly so a non-admin login can watch the console.
+      // Routes that write to a sensor stay on the admin default; register them
+      // with a plain router.get/post, never through access().
+      router.access('readonly').get('/api/health', (_req: Request, res: Response) => {
+        const body: HealthResponse = {
+          running,
+          selectedDevice: currentConfig().selectedDevice ?? null
+        }
+        res.json(body)
       })
     }
   }

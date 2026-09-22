@@ -7,9 +7,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "public",
-    "icon.png",
-    "openApi.json"
+    "public"
   ],
   "keywords": [
     "signalk-node-server-plugin",
@@ -24,20 +22,24 @@
     "calibration"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "build:ui": "vite build",
+    "check": "npm run typecheck && npm run typecheck:ui && npm run lint && npm run format:check",
+    "ci": "npm run ci:portable && npm run test:packaging",
+    "ci:portable": "npm run check && npm test && npm run test:ui",
     "dev:ui": "vite",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "lint": "eslint src/ test/",
-    "lint:fix": "eslint --fix src/ test/",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
-    "typecheck": "tsc --noEmit",
-    "ci": "npm run typecheck && npm run typecheck:ui && npm run lint && npm run format:check && npm run test",
-    "prepublishOnly": "npm run build && npm run build:ui",
-    "typecheck:ui": "tsc --noEmit -p tsconfig.ui.json"
+    "lint": "eslint src/ test/ --report-unused-disable-directives",
+    "lint:fix": "eslint --fix src/ test/",
+    "prepare": "npm run build && npm run build:ui",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:packaging": "vitest run --config vitest.packaging.config.ts",
+    "test:ui": "vitest run --config vitest.ui.config.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.lint.json",
+    "typecheck:ui": "tsc --noEmit -p src/ui/tsconfig.json"
   },
   "engines": {
     "node": ">=22.0.0",
@@ -58,15 +60,12 @@
   },
   "signalk-plugin-enabled-by-default": false,
   "peerDependencies": {
-    "@signalk/server-api": "^2.10.0"
-  },
-  "dependencies": {
-    "lit": "^3.2.0"
+    "@signalk/server-api": "^2.31.0"
   },
   "devDependencies": {
     "@canboat/canboatjs": "^3.20.0",
     "@canboat/ts-pgns": "^1.11.11",
-    "@signalk/server-api": "^2.10.0",
+    "@signalk/server-api": "^2.31.0",
     "@tsconfig/node22": "^22.0.1",
     "@types/express": "^5.0.6",
     "@types/node": "^22.15.0",
@@ -74,7 +73,9 @@
     "eslint": "^9.24.0",
     "eslint-config-prettier": "^10.1.2",
     "express": "^5.2.1",
+    "happy-dom": "^20.14.5",
     "lefthook": "^1.11.13",
+    "lit": "^3.2.0",
     "prettier": "^3.5.3",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.29.1",

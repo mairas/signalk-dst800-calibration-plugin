@@ -1,12 +1,8 @@
 import { LitElement, html, css } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
+import type { HealthResponse } from '../types.js'
 
 const API_BASE = '/plugins/signalk-airmar-dst-config'
-
-interface Health {
-  running: boolean
-  selectedDevice: { manufacturerCode: number; uniqueNumber: number } | null
-}
 
 @customElement('dst-app')
 export class DstApp extends LitElement {
@@ -16,32 +12,64 @@ export class DstApp extends LitElement {
       padding: 1rem;
       font-family: system-ui, sans-serif;
     }
+    .error {
+      color: #b00;
+    }
   `
 
-  @state() private health: Health | null = null
+  @state() private health: HealthResponse | null = null
   @state() private error: string | null = null
+
+  private inFlight: AbortController | null = null
 
   override connectedCallback() {
     super.connectedCallback()
     void this.load()
   }
 
+  override disconnectedCallback() {
+    super.disconnectedCallback()
+    this.inFlight?.abort()
+    this.inFlight = null
+  }
+
+  /**
+   * Re-attaching the element calls connectedCallback again, so an earlier
+   * request can still be in flight. Abort it rather than letting whichever
+   * response lands last win.
+   */
   private async load() {
+    this.inFlight?.abort()
+    const controller = new AbortController()
+    this.inFlight = controller
     try {
-      const response = await fetch(`${API_BASE}/api/health`, { credentials: 'same-origin' })
+      const response = await fetch(`${API_BASE}/api/health`, {
+        credentials: 'same-origin',
+        signal: controller.signal
+      })
       if (!response.ok) {
         throw new Error(`${String(response.status)} ${response.statusText}`)
       }
-      this.health = (await response.json()) as Health
+      this.health = (await response.json()) as HealthResponse
       this.error = null
     } catch (cause) {
+      if (cause instanceof Error && cause.name === 'AbortError') {
+        return
+      }
       this.error = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      if (this.inFlight === controller) {
+        this.inFlight = null
+      }
     }
   }
 
   override render() {
     if (this.error !== null) {
-      return html`<p>Cannot reach the plugin: ${this.error}</p>`
+      return html`
+        <p class="error">Cannot reach the plugin: ${this.error}</p>
+        <button @click=${() => void this.load()}>Retry</button>
+      `
     }
     if (this.health === null) {
       return html`<p>Loading…</p>`

@@ -16,6 +16,18 @@ export default tseslint.config(
     }
   },
   {
+    // The webapp has its own tsconfig, so it needs its own parser project.
+    // Without this block src/ui is unlinted and `any` goes unenforced there:
+    // tsc --strict catches only implicit any.
+    files: ['src/ui/**/*.ts', 'test/ui/**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        project: './src/ui/tsconfig.json',
+        tsconfigRootDir: import.meta.dirname
+      }
+    }
+  },
+  {
     files: ['**/*.ts'],
     rules: {
       eqeqeq: ['error', 'always'],
@@ -33,6 +45,6 @@ export default tseslint.config(
     }
   },
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'public/**', 'src/ui/**', 'test/ui/**', '*.config.js']
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'public/**', '*.config.js']
   }
 )

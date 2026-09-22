@@ -68,10 +68,24 @@ function clean {
 ################################################################################
 # Quality Commands
 
+# Shadows the bash `test` builtin for this script. Nothing here uses it; use
+# [[ ]] rather than `test` in any new target.
 function test {
-  #@ Run the test suite
+  #@ Run the unit tests
   #@ Category: Quality
   npm test
+}
+
+function test-ui {
+  #@ Run the webapp tests
+  #@ Category: Quality
+  npm run test:ui
+}
+
+function test-packaging {
+  #@ Check what the published tarball contains
+  #@ Category: Quality
+  npm run test:packaging
 }
 
 function test-watch {
@@ -104,11 +118,23 @@ function format {
   npm run format
 }
 
+function format-check {
+  #@ Check formatting without writing
+  #@ Category: Quality
+  npm run format:check
+}
+
 function typecheck {
   #@ Type-check the plugin and the webapp
   #@ Category: Quality
   npm run typecheck
   npm run typecheck:ui
+}
+
+function check {
+  #@ Type-check, lint and check formatting
+  #@ Category: Quality
+  npm run check
 }
 
 function ci {

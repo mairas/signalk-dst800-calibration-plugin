@@ -5,7 +5,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts'],
-    exclude: ['test/ui/**'],
+    // Packaging runs separately: it builds, so it is neither hermetic nor fast.
+    exclude: ['test/ui/**', 'test/packaging.test.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
