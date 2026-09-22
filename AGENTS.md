@@ -63,6 +63,22 @@ Validate before encoding, never clamp. canboatjs truncates silently: an out-of-r
 
 Treat any acknowledgement code that is not the literal string `Acknowledge` as a failure, including numbers. canboatjs leaves a lookup it cannot name as a raw number, and the error fields are wider than the enumerated values, so defaulting the unknown case to success reports a refused command as applied.
 
+## Device session
+
+`src/session/` owns every conversation with a device. One `DeviceSession` per device, one request in flight at a time.
+
+Airmar's messages carry no transaction id, so correlation is structural: a reply must come from the device's source address, and it must be global or addressed to the gateway. The serial queue is what makes that enough. Do not add concurrency to the queue — two outstanding requests to one device cannot be told apart.
+
+**The gateway's own source address is inferred, not read.** Nothing in the Signal K server exposes the address canboatjs claimed. The session learns it from the `dst` of replies that answered its own requests, adopts it only after two agreeing observations, and discards it on any timeout. Until it is known, an addressed reply meant for another plotter is accepted — the documented degradation. One observation is not enough: a wrong address filters out every real reply, and the timeout reset is what stops that being permanent.
+
+Every message from the device reaches `onObservation`, including replies that answer nobody and replies that arrive after their request timed out. They cannot resolve a request, but they are still the device's true state.
+
+**Silence is `unknown`, never failure.** canboatjs drops a fast-packet message that lost a frame without reporting it, and on the wire that is indistinguishable from a PID the device does not implement. An `Outcome` is three-valued for that reason; collapsing it would let the console report a supported setting as missing.
+
+Parameter error `Temporary error` and access denied each get exactly one retry, the latter after re-unlocking. Everything else surfaces as the device sent it.
+
+Access Level 1 expires 15 minutes after the unlock and lives in RAM, so the session unlocks lazily and re-unlocks at 14 minutes. A NAKed unlock is sticky: that product has no Level 1, and retrying it would repeat on every later operation. An unlock that goes unanswered is not sticky, because silence is not a refusal.
+
 ## HTTP routes
 
 Read routes are registered through `router.access('readonly')` so a non-admin login can use the console. A route registered with a plain `router.get` records no permission, and the server falls through to admin-only.
