@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import plugin, { PLUGIN_ID } from '../src/index.js'
 import { createMockServerAPI } from '../src/test/MockServerAPI.js'
@@ -14,6 +14,7 @@ interface PackResult {
 
 interface PackageManifest {
   name: string
+  version: string
   signalk?: { screenshots?: string[]; appIcon?: string }
 }
 
@@ -68,17 +69,33 @@ describe('published package contents', () => {
 
   // The tarball only contains build output once the build has run, so this
   // check builds rather than depending on the order commands happen to run in.
+  //
+  // execSync rather than execFileSync: on Windows npm is npm.cmd, which
+  // execFileSync cannot resolve without a shell, and Node refuses to spawn a
+  // .cmd through one since the CVE-2024-27980 fix. These commands are
+  // literals, so a shell adds no injection surface.
+  const npm = (command: string, capture: boolean) =>
+    execSync(`npm ${command}`, {
+      stdio: capture ? 'pipe' : 'ignore',
+      encoding: 'utf8'
+    })
+
   beforeAll(() => {
-    execFileSync('npm', ['run', 'build'], { stdio: 'ignore' })
-    execFileSync('npm', ['run', 'build:ui'], { stdio: 'ignore' })
-    const packed = JSON.parse(
-      execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' })
-    ) as PackResult[]
-    paths = packed[0].files.map((f) => f.path)
-  }, 120_000)
+    npm('run build', false)
+    npm('run build:ui', false)
+    paths = (JSON.parse(npm('pack --dry-run --json', true)) as PackResult[])[0].files.map(
+      (f) => f.path
+    )
+  }, 180_000)
 
   it('is published under the new package name', () => {
     expect(manifest.name).toBe(PLUGIN_ID)
+  })
+
+  it('keeps VERSION and package.json in step', () => {
+    // publish-npm.yml refuses to publish when these disagree, so a drift
+    // here fails the release rather than this test.
+    expect(readFileSync('VERSION', 'utf8').trim()).toBe(manifest.version)
   })
 
   it('ships the built plugin and webapp', () => {
