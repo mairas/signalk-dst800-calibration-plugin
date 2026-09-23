@@ -31,7 +31,7 @@ const commandFor = (id: SettingId, input: unknown, qualifier?: number): Outgoing
   if (!built.ok) {
     throw new Error(built.error)
   }
-  return built.value.message
+  return built.value.spec.message
 }
 
 const requestFor = (id: SettingId, qualifier?: number): OutgoingPgn => {
@@ -88,7 +88,7 @@ describe('the settings registry', () => {
     }
     const built = buildCommand(id, DEVICE, sample.input, sample.qualifier)
 
-    expect(built.ok && built.value.message.dst).toBe(DEVICE)
+    expect(built.ok && built.value.spec.message.dst).toBe(DEVICE)
   })
 
   it.each(SETTINGS.filter((s) => s.readable).map((s) => s.id))(
