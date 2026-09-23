@@ -22,7 +22,7 @@ import type { AcknowledgeResult } from '../protocol/codec.js'
 import type { DecodedPgn, OutgoingPgn, OutgoingRaw } from '../protocol/messages.js'
 import { AirmarPid, PARAM, PGN, pidFromName } from '../protocol/pids.js'
 import { AccessLevelState } from './accessLevel.js'
-import { ACCESS_DENIED, ACK_OK, TEMPORARY_ERROR } from './outcome.js'
+import { ACK_OK, TEMPORARY_ERROR, isAccessDenied } from './outcome.js'
 import type { Outcome } from './outcome.js'
 
 /**
@@ -111,7 +111,7 @@ export interface DeviceSessionOptions {
 
 interface InFlight {
   onReply(pgn: DecodedPgn, ack: AcknowledgeResult | null): void
-  abort(): void
+  abort(outcome: Outcome<never>): void
 }
 
 /**
@@ -198,18 +198,17 @@ const describeAcknowledge = (ack: AcknowledgeResult): string => {
 }
 
 const classify = (ack: AcknowledgeResult): RetryClass => {
-  const denied =
-    ack.pgnError === ACCESS_DENIED || ack.parameterErrors.some((e) => e.error === ACCESS_DENIED)
-  if (denied) {
+  if (isAccessDenied(ack)) {
     return 'accessDenied'
   }
   return ack.parameterErrors.some((e) => e.error === TEMPORARY_ERROR) ? 'temporary' : 'none'
 }
 
-const CLOSED: Outcome<never> = { status: 'unknown', reason: 'The session was closed' }
+const CLOSED_REASON = 'The session was closed'
 
 export class DeviceSession {
-  private readonly address: number
+  /** The source address this session is bound to for its life. */
+  readonly address: number
   private readonly bus: Bus
   private readonly onObservation: ((pgn: DecodedPgn) => void) | undefined
   private readonly onError: ((error: unknown) => void) | undefined
@@ -227,7 +226,8 @@ export class DeviceSession {
   private adaptiveTimeoutMs: number
   private draining = false
   private inFlight: InFlight | null = null
-  private closed = false
+  /** Null while the session is open; what every later operation reports once closed. */
+  private closedOutcome: { status: 'unknown'; reason: string } | null = null
 
   private consecutiveTimeouts = 0
   private gateway: number | null = null
@@ -263,6 +263,16 @@ export class DeviceSession {
    */
   get gatewayAddress(): number | null {
     return this.gateway
+  }
+
+  /** Why the session was closed, or null while it is open. */
+  get closedReason(): string | null {
+    return this.closedOutcome?.reason ?? null
+  }
+
+  /** How long the next request waits for its answer, after any widening. */
+  get currentTimeoutMs(): number {
+    return this.adaptiveTimeoutMs
   }
 
   get level1Unavailable(): boolean {
@@ -330,8 +340,8 @@ export class DeviceSession {
     options: { requiresLevel1?: boolean } = {}
   ): Promise<Outcome<void>> {
     const outcome = await this.enqueue(async () => {
-      if (this.closed) {
-        return CLOSED
+      if (this.closedOutcome !== null) {
+        return this.closedOutcome
       }
       if (options.requiresLevel1 === true) {
         const blocked = await this.ensureLevel1()
@@ -352,14 +362,36 @@ export class DeviceSession {
     return outcome.status === 'answered' ? { status: 'answered', value: undefined } : outcome
   }
 
-  /** Stop listening and fail everything outstanding. Safe to call twice. */
-  close(): void {
-    if (this.closed) {
+  /**
+   * Raise the access level now, with no operation to protect.
+   *
+   * For a caller that needs the grant held before a sequence of reads, such
+   * as a capability probe, whose reads do not ask for Level 1 themselves.
+   */
+  async unlock(): Promise<Outcome<void>> {
+    const outcome = await this.enqueue<never>(async () => {
+      if (this.closedOutcome !== null) {
+        return this.closedOutcome
+      }
+      return (await this.ensureLevel1()) ?? { status: 'answered', value: [] }
+    })
+    return outcome.status === 'answered' ? { status: 'answered', value: undefined } : outcome
+  }
+
+  /**
+   * Stop listening and fail everything outstanding. Safe to call twice.
+   *
+   * `reason` reaches every caller still waiting, so the owner can say why —
+   * that the device moved, rather than that something closed.
+   */
+  close(reason: string = CLOSED_REASON): void {
+    if (this.closedOutcome !== null) {
       return
     }
-    this.closed = true
+    const outcome = { status: 'unknown' as const, reason }
+    this.closedOutcome = outcome
     this.unsubscribe()
-    this.inFlight?.abort()
+    this.inFlight?.abort(outcome)
   }
 
   private enqueue<T>(task: () => Promise<Outcome<T[]>>): Promise<Outcome<T[]>> {
@@ -426,8 +458,8 @@ export class DeviceSession {
   }
 
   private async run<T>(spec: ReadSpec<T> | CommandSpec): Promise<Outcome<T[]>> {
-    if (this.closed) {
-      return CLOSED
+    if (this.closedOutcome !== null) {
+      return this.closedOutcome
     }
     if (spec.requiresLevel1 === true) {
       const blocked = await this.ensureLevel1()
@@ -505,8 +537,8 @@ export class DeviceSession {
 
   private startAttempt<T>(spec: ReadSpec<T> | CommandSpec): Promise<AttemptResult<T>> {
     return new Promise<AttemptResult<T>>((resolve) => {
-      if (this.closed) {
-        resolve({ outcome: CLOSED, retry: 'none' })
+      if (this.closedOutcome !== null) {
+        resolve({ outcome: this.closedOutcome, retry: 'none' })
         return
       }
 
@@ -565,8 +597,8 @@ export class DeviceSession {
       }, timeoutMs)
 
       this.inFlight = {
-        abort: () => {
-          finish({ outcome: CLOSED, retry: 'none' })
+        abort: (outcome) => {
+          finish({ outcome, retry: 'none' })
         },
         onReply: (pgn, ack) => {
           if (ack !== null) {
@@ -646,7 +678,7 @@ export class DeviceSession {
    * on a vessel, the process feeding the autopilot and the anchor alarm.
    */
   private onBusMessage(pgn: DecodedPgn): void {
-    if (this.closed || pgn.src !== this.address) {
+    if (this.closedOutcome !== null || pgn.src !== this.address) {
       return
     }
     try {
