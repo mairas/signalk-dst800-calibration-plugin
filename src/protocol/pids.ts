@@ -144,6 +144,38 @@ export const PGN = {
 } as const
 
 /**
+ * Airmar's own PGNs, which answer only a group function naming the
+ * manufacturer, and which PGN 126464 never lists.
+ */
+export const AIRMAR_PGNS: readonly number[] = [
+  PGN.accessLevel,
+  PGN.depthQualityFactor,
+  PGN.speedPulseCount,
+  PGN.deviceInformation,
+  PGN.post
+]
+
+export const isAirmarPgn = (pgn: number): boolean => AIRMAR_PGNS.includes(pgn)
+
+/** PGN 126464 field 1: which list, and the value naming the transmit list. */
+export const PGN_LIST_FUNCTION_PARAM = 1
+export const TRANSMIT_PGN_LIST = 0
+
+/** The 126208 `pgn` field is 24 bits, and canboat wraps a larger value onto another PGN. */
+export const MAX_PGN = 262143
+
+/**
+ * The fast-packet PGNs a DST-family sensor transmits. The plugin has no
+ * runtime dependency on canboat, so the table is local; a test checks it
+ * against canboat's definitions. A PGN missing here is treated as fast-packet,
+ * whose minimum interval is the stricter one.
+ */
+export const SINGLE_FRAME_PGNS: readonly number[] = [
+  59392, 60928, 65408, 65409, 65410, 126992, 126993, 127245, 127250, 128259, 128267, 130310, 130311,
+  130312, 130316
+]
+
+/**
  * Actisense payload bytes for the two messages canboatjs cannot encode.
  *
  * Proprietary IDs 1 and 130 have no @canboat/ts-pgns definition, so canboatjs

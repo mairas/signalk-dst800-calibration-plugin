@@ -21,6 +21,9 @@ import {
   MAX_CURVE_POINTS,
   MAX_CURVE_SPEED,
   PARAM,
+  PGN_LIST_FUNCTION_PARAM,
+  TRANSMIT_PGN_LIST,
+  isAirmarPgn,
   PGN,
   RESTORE_DEFAULT_CURVE,
   eepromResetPayload,
@@ -96,23 +99,65 @@ function groupFunction(
   dst: number,
   functionCode: 'Request' | 'Command',
   targetPgn: number,
-  params: Parameter[]
+  params: Parameter[],
+  options: { intervalSeconds?: number; priority?: number } = {}
 ): OutgoingPgn {
   const list = params.map((p) => ({ parameter: p.parameter, value: p.value }))
-  // The transmission interval and its offset are left out rather than set to
-  // a sentinel: they carry a 0.001 s resolution, so a raw 0xffffffff would be
-  // scaled. Omitting them encodes the not-available value the device expects.
+  // Without an interval, the interval and its offset are left out rather than
+  // set to a sentinel: they carry a 0.001 s resolution, so a raw 0xffffffff
+  // would be scaled. Omitting them encodes the not-available value the device
+  // expects.
   const fields: Record<string, unknown> =
     functionCode === 'Request'
-      ? { functionCode, pgn: targetPgn, numberOfParameters: list.length, list }
+      ? {
+          functionCode,
+          pgn: targetPgn,
+          ...(options.intervalSeconds === undefined
+            ? {}
+            : { transmissionInterval: options.intervalSeconds }),
+          numberOfParameters: list.length,
+          list
+        }
       : {
           functionCode,
           pgn: targetPgn,
-          priority: PRIORITY_UNCHANGED,
+          priority: options.priority ?? PRIORITY_UNCHANGED,
           numberOfParameters: list.length,
           list
         }
   return { pgn: PGN.groupFunction, dst, prio: PRIORITY, fields }
+}
+
+/** Airmar's own PGNs, such as 65409, answer only a group function naming the manufacturer. */
+const AIRMAR_PGN_PARAMS: Parameter[] = [
+  { parameter: PARAM.manufacturerCode, value: AIRMAR.manufacturerCode },
+  { parameter: PARAM.industryCode, value: AIRMAR.industryCode }
+]
+
+const qualifiersFor = (pgn: number): Parameter[] => (isAirmarPgn(pgn) ? AIRMAR_PGN_PARAMS : [])
+
+/**
+ * Set how often the device transmits `pgn`.
+ *
+ * A Request carrying an interval. The device acknowledges only a request it
+ * cannot comply with (manual p.15), so silence is its acceptance.
+ */
+export function requestInterval(dst: number, pgn: number, intervalMs: number): OutgoingPgn {
+  return groupFunction(dst, 'Request', pgn, qualifiersFor(pgn), {
+    intervalSeconds: intervalMs / 1000
+  })
+}
+
+/** Set the priority the device transmits `pgn` at. Acknowledged like any Command. */
+export function commandPriority(dst: number, pgn: number, priority: number): OutgoingPgn {
+  return groupFunction(dst, 'Command', pgn, qualifiersFor(pgn), { priority })
+}
+
+/** Request the device's transmit PGN list alone; without the qualifier it sends both lists. */
+export function requestTransmitList(dst: number): OutgoingPgn {
+  return groupFunction(dst, 'Request', PGN.pgnList, [
+    { parameter: PGN_LIST_FUNCTION_PARAM, value: TRANSMIT_PGN_LIST }
+  ])
 }
 
 /** Request a proprietary PGN 126720 message by its proprietary ID. */
@@ -133,10 +178,7 @@ export function requestProprietary(
  * answers an ISO Request.
  */
 export function requestAirmarPgn(dst: number, pgn: number): OutgoingPgn {
-  return groupFunction(dst, 'Request', pgn, [
-    { parameter: PARAM.manufacturerCode, value: AIRMAR.manufacturerCode },
-    { parameter: PARAM.industryCode, value: AIRMAR.industryCode }
-  ])
+  return groupFunction(dst, 'Request', pgn, AIRMAR_PGN_PARAMS)
 }
 
 /** Request a standard PGN, such as 126996 Product Information. */

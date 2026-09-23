@@ -11,14 +11,17 @@ import {
   MAX_CURVE_POINTS,
   MAX_CURVE_SPEED,
   assertIdentity,
+  commandPriority,
   commandProprietary,
   commandStandardField,
   decodeAcknowledge,
   decodeSpeedCurve,
   masterReset,
   requestAirmarPgn,
+  requestInterval,
   requestSpeedCurve,
   requestStandardPgn,
+  requestTransmitList,
   resetEeprom,
   restoreDefaultSpeedCurve,
   setSpeedCurve,
@@ -542,5 +545,30 @@ describe('requesting a whole PGN', () => {
     const decoded = decode(build())
     expect(build()).toMatchObject({ dst: DST, pgn: 126208 })
     expect(decoded.fields?.functionCode).toBe('Request')
+  })
+})
+
+describe('transmission interval and priority', () => {
+  it('sets a standard PGN’s interval through a Request, in milliseconds on the wire', () => {
+    // 500 ms is 0x01f4; the offset is left not available.
+    expect(payload(requestInterval(DST, 128267, 500))).toBe('00,0b,f5,01,f4,01,00,00,ff,ff,00')
+  })
+
+  it('names Airmar in an interval request for one of its own PGNs', () => {
+    expect(payload(requestInterval(DST, 65409, 100))).toBe(
+      '00,81,ff,00,64,00,00,00,ff,ff,02,01,87,00,03,04'
+    )
+  })
+
+  it('sets a priority through a Command', () => {
+    expect(payload(commandPriority(DST, 128259, 2))).toBe('01,03,f5,01,f2,00')
+  })
+
+  it('asks for the transmit list alone', () => {
+    expect(decode(requestTransmitList(DST)).fields).toMatchObject({
+      functionCode: 'Request',
+      pgn: 126464,
+      list: [{ parameter: 1, value: 'Transmit PGN list' }]
+    })
   })
 })
