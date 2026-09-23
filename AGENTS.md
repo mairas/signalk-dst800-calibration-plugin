@@ -129,11 +129,25 @@ A session is bound to one address, so `DeviceConnection` closes it when the devi
 
 Airmar's proprietary PGNs (65287, 65408–65410, 130944) answer only a 126208 Request naming fields 1 and 3, never an ISO Request. `requestAirmarPgn` builds that; standard PGNs take `requestStandardPgn`.
 
-## canboatjs cannot encode every proprietary message
+## Settings
 
-Three so far: proprietary IDs 1 and 130 have no definition at all (see above), and **Speed Filter (43) cannot be encoded in any field combination** — its variants match on `filterType`, and the encoder throws `Cannot read properties of undefined` for every shape, including the exact field sets `@canboat/ts-pgns` declares. Temperature Filter (44) is defined the same way and is likely the same.
+`src/settings/registry.ts` describes each configurable capability once: how to request it, decode the reply, validate outside input, build the command, and compare a read-back with what was asked for. Each entry also declares whether it is `readable` and `writable`, and a qualified entry lists its qualifiers with canboat's names. Anything that handles settings should be generic over the entries, so that a new capability is a new entry.
 
-This is an encoder limit, not a decoder one. It matters for test fixtures — the multi-reply tests use PGN 126464, which encodes — and for any code that writes filter settings. Check before designing around a proprietary message: build it, encode it, parse it back.
+**Nothing from outside the plugin reaches the bus without passing an entry's `parse`.** `buildCommand` is the one path from a request body to a frame; it also checks the qualifier, such as a temperature source. Ranges are the manual's allowable ranges, not the field's width: speed of sound 1350–1650 m/s, temperature offset ±9.999 K. A value the field could hold but the manual forbids is refused here, before the device can store it.
+
+**Compare a read-back at the device's resolution, never exactly.** The device stores the curve at 0.1 Hz and 0.01 m/s, speed of sound at 0.1 m/s and offsets at 1 mm or 0.001 K, so an exact comparison fails every successful write. `sameAsStored` rounds both sides to the stored step the way canboatjs does, half away from zero; `Math.round` disagrees on a negative half step. Two values do not read back as written: canboatjs trims a decoded string, so `parse` trims the installation description before it is written, and the trip log keeps counting under way, so a reset matches a read-back up to 100 m on.
+
+Every lookup in a reply is read as canboat's name or as its raw number, for the same reason as the acknowledgement codes: a provider can turn name resolution off.
+
+**The speed and temperature filters are write-only.** Their commands encode and the device acknowledges them, but canboatjs 3.20.0 cannot decode a 126720-43 or -44 reply, and the server runs that version, so the stored value never reaches the plugin (issue 22). Their `read` returns null. The device stores the parameters per filter type, so a write may carry the type alone to switch filters without overwriting parameters the plugin cannot read. Do not add a decoder that reads `canboatjs:unparsed:data`: its chunk format depends on the provider, and it also carries every intermediate fast-packet frame.
+
+The depth offset is field 3 of the standard PGN 128267, not PID 40. PID 40 is the speed of sound. The manual's "distance since last reset" is canboat's `tripLog` in PGN 128275.
+
+## canboatjs cannot encode or decode every proprietary message
+
+Proprietary IDs 1 and 130 have no definition at all (see above). **The Speed Filter (43) and Temperature Filter (44) replies can be neither encoded nor decoded**, in any field combination. Their variants match on `filterType`, and at that field canboatjs's variant filter still holds a four-field 126720 definition, so `f.Fields[4].Match` throws. The 126208 Command and Request that carry the same fields encode correctly, so the plugin can write filters but not read them.
+
+This matters for test fixtures, because the multi-reply tests use PGN 126464, which encodes. Check before designing around a proprietary message: build it, encode it, parse it back.
 
 ## HTTP routes
 
