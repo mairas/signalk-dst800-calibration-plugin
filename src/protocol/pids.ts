@@ -125,6 +125,7 @@ export const RESTORE_DEFAULT_CURVE = 0xfe
 export const ACCESS_LEVEL_1_KEY = 0x12345678
 
 export const PGN = {
+  addressClaim: 60928,
   accessLevel: 65287,
   depthQualityFactor: 65408,
   speedPulseCount: 65409,
