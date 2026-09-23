@@ -28,15 +28,14 @@ export const ACCESS_LEVEL_1_REFRESH_MS = ACCESS_LEVEL_1_TTL_MS - REFRESH_MARGIN_
  *
  * Not one. An unlock is a Command Group Function on PGN 65287, and until the
  * session knows the gateway's own source address it cannot tell the device's
- * refusal of *another* plotter's unlock from a refusal of its own. Acting on
- * a single refusal lets one neighbour on the bus disable calibration for the
- * rest of the session, with no way back.
+ * refusal of *another* plotter's unlock from a refusal of its own.
  */
 export const REFUSALS_BEFORE_UNAVAILABLE = 2
 
 export class AccessLevelState {
   private unlockedAt: number | null = null
   private refusals = 0
+  private refusedAt: number | null = null
 
   /** True when the next Level-1 operation must be preceded by an unlock. */
   needsUnlock(now: number): boolean {
@@ -56,6 +55,7 @@ export class AccessLevelState {
     // The device has just proved it offers Level 1, so earlier refusals said
     // something about who they answered, not about this product.
     this.refusals = 0
+    this.refusedAt = null
   }
 
   /**
@@ -70,13 +70,35 @@ export class AccessLevelState {
   }
 
   /** The device refused the unlock itself. Returns true once that is final. */
-  recordRefusal(): boolean {
+  recordRefusal(now: number): boolean {
+    if (this.refusedAt !== null && !this.withinRefusalWindow(now)) {
+      this.refusals = 0
+    }
     this.refusals += 1
-    return this.isUnavailable
+    this.refusedAt = now
+    return this.isUnavailable(now)
   }
 
-  get isUnavailable(): boolean {
-    return this.refusals >= REFUSALS_BEFORE_UNAVAILABLE
+  /**
+   * Whether to stop asking for Level 1 for now.
+   *
+   * Deliberately not permanent. The refusals that set it may have answered
+   * another node's unlock, and an absorbing state derived from a frame this
+   * session could not attribute would disable calibration for the rest of the
+   * session with nothing the user could do. It lapses after one grant
+   * lifetime, so a product that truly has no Level 1 is asked again at most
+   * once every fifteen minutes rather than on every write.
+   */
+  isUnavailable(now: number): boolean {
+    return this.withinRefusalWindow(now) && this.refusals >= REFUSALS_BEFORE_UNAVAILABLE
+  }
+
+  private withinRefusalWindow(now: number): boolean {
+    if (this.refusedAt === null) {
+      return false
+    }
+    const since = now - this.refusedAt
+    return since >= 0 && since < ACCESS_LEVEL_1_TTL_MS
   }
 
   /** A master reset or EEPROM restore drops the grant at the device. */

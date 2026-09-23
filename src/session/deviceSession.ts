@@ -46,6 +46,16 @@ export const MAX_QUEUE_DEPTH = 32
 /** Two consecutive timeouts before the learned gateway address is discarded. */
 const TIMEOUTS_BEFORE_FORGETTING_GATEWAY = 2
 
+/**
+ * The longest the session will stretch its own timeout.
+ *
+ * A reply that arrives inside the mute window proves the device answers and
+ * that the timeout was too short for this bus, so the session widens it rather
+ * than repeating the same failure. The cap stops a device that answers once an
+ * hour from making every control feel broken.
+ */
+const MAX_ADAPTIVE_TIMEOUT_MS = 8000
+
 const GLOBAL_ADDRESS = 255
 
 export interface Bus {
@@ -105,16 +115,28 @@ interface InFlight {
 }
 
 /**
- * A reply an abandoned attempt is still owed.
+ * The shape of a reply an abandoned attempt may still receive.
  *
- * Without this the next request adopts the previous one's late reply: the
- * shapes are identical, because the protocol has nothing in a reply that says
- * which request it answers.
+ * The protocol has nothing in a reply naming the request it answers, so once
+ * an attempt gives up, any later reply of the same shape is ambiguous. The
+ * session mutes that shape for one timeout and, crucially, does not send the
+ * next request of it until the mute lapses.
+ *
+ * Counting the outstanding replies and consuming them was tried and is wrong.
+ * The commonest cause of a timeout is a reply that will never arrive —
+ * canboatjs drops a fast-packet message that lost a frame — so a debt is
+ * usually paid off by the *next* request's legitimate reply, which fails a
+ * working device. Where the device is merely slow, the debt is consumed by
+ * whichever reply lands first, which is as likely to be the fresh one, and the
+ * caller is then handed the stale value under `answered`.
+ *
+ * Muting and delaying costs latency after a timeout and never a wrong value.
  */
-interface Abandoned {
+interface Muted {
   acknowledgedPgn: number
+  wantsAck: boolean
+  dataPgn: number | null
   pid: AirmarPid | null
-  owed: number
   expiresAt: number
 }
 
@@ -142,6 +164,12 @@ function targetPgn(message: OutgoingPgn): number {
  * the message, and the disagreement would show up only as a silent timeout.
  */
 function requestedPid(message: OutgoingPgn): AirmarPid | null {
+  // Parameter 4 is the proprietary ID only when the target is 126720. It is
+  // the access format code in an unlock, whose value 1 would otherwise read
+  // back as the master-reset PID.
+  if (targetPgn(message) !== PGN.proprietary) {
+    return null
+  }
   const list = message.fields.list
   if (!Array.isArray(list)) {
     return null
@@ -191,8 +219,12 @@ export class DeviceSession {
 
   private readonly access = new AccessLevelState()
   private readonly queue: (() => Promise<void>)[] = []
-  private readonly coalesced = new Map<string, Promise<Outcome<unknown[]>>>()
-  private abandoned: Abandoned[] = []
+  private readonly coalesced = new Map<
+    string,
+    { spec: ReadSpec<never>; promise: Promise<Outcome<unknown[]>> }
+  >()
+  private muted: Muted[] = []
+  private adaptiveTimeoutMs: number
   private draining = false
   private inFlight: InFlight | null = null
   private closed = false
@@ -207,6 +239,7 @@ export class DeviceSession {
     this.onObservation = options.onObservation
     this.onError = options.onError
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    this.adaptiveTimeoutMs = this.timeoutMs
     this.now = options.now ?? (() => performance.now())
     this.unsubscribe = options.bus.subscribe((pgn) => {
       this.onBusMessage(pgn)
@@ -233,25 +266,38 @@ export class DeviceSession {
   }
 
   get level1Unavailable(): boolean {
-    return this.access.isUnavailable
+    return this.access.isUnavailable(this.now())
   }
 
   /**
    * Ask the device for data.
    *
    * Identical reads coalesce: several browser tabs opening one panel put a
-   * single frame on the bus. The key is derived from the frame, so equal keys
-   * mean equal frames by construction and two callers can never be joined onto
-   * an operation that is not theirs.
+   * single frame on the bus. Two reads join only when their frame, decoder and
+   * options all match, so a caller never receives values decoded for someone
+   * else. A decoder built fresh at each call site never joins, which costs a
+   * frame rather than correctness.
    */
   read<T>(spec: ReadSpec<T>): Promise<Outcome<T[]>> {
     const key = JSON.stringify(spec.message)
     const existing = this.coalesced.get(key)
+    // The same frame is not the same operation: two callers can ask one
+    // question and want different things decoded out of the answer. Join only
+    // when the decoder and the reply budget agree as well.
+    if (
+      existing !== undefined &&
+      existing.spec.match === (spec.match as unknown) &&
+      existing.spec.expectedReplies === spec.expectedReplies &&
+      existing.spec.timeoutMs === spec.timeoutMs &&
+      existing.spec.requiresLevel1 === spec.requiresLevel1
+    ) {
+      return existing.promise as Promise<Outcome<T[]>>
+    }
     if (existing !== undefined) {
-      return existing as Promise<Outcome<T[]>>
+      return this.enqueue(() => this.run(spec))
     }
     const promise = this.enqueue(() => this.run(spec))
-    this.coalesced.set(key, promise)
+    this.coalesced.set(key, { spec: spec as unknown as ReadSpec<never>, promise })
     void promise.finally(() => {
       this.coalesced.delete(key)
     })
@@ -296,7 +342,7 @@ export class DeviceSession {
       try {
         this.bus.send(message)
       } catch (error) {
-        this.onError?.(error)
+        this.report(error)
         return { status: 'unknown', reason: 'The frame could not be put on the bus' }
       }
       this.access.forget()
@@ -318,8 +364,11 @@ export class DeviceSession {
 
   private enqueue<T>(task: () => Promise<Outcome<T[]>>): Promise<Outcome<T[]>> {
     if (this.queue.length >= MAX_QUEUE_DEPTH) {
+      // Rejected, not unknown: the session knows this frame never reached the
+      // bus, and a console that cannot tell that from a lost write will
+      // encourage the user to write EEPROM again.
       return Promise.resolve({
-        status: 'unknown',
+        status: 'rejected',
         reason: 'The device has a backlog of unanswered requests'
       })
     }
@@ -328,15 +377,32 @@ export class DeviceSession {
         try {
           resolve(await task())
         } catch (error) {
-          // A task must always settle its caller. Letting the rejection escape
-          // would leave the promise pending for ever and, before the finally
-          // below existed, wedge the drain loop for every later request.
-          this.onError?.(error)
+          // Settle first, report second. A task must always settle its caller,
+          // and `onError` belongs to the host: a logger that throws during
+          // shutdown would otherwise leave the promise pending for ever and
+          // raise an unhandled rejection out of the drain.
           resolve({ status: 'unknown', reason: 'The operation failed before it was answered' })
+          this.report(error)
         }
       })
-      void this.drain()
+      this.startDraining()
     })
+  }
+
+  /** A drain failure must never surface as an unhandled rejection. */
+  private startDraining(): void {
+    this.drain().catch((error: unknown) => {
+      this.report(error)
+    })
+  }
+
+  /** Report a failure to the host without letting the host's failure escape. */
+  private report(error: unknown): void {
+    try {
+      this.onError?.(error)
+    } catch {
+      // A reporter that throws is not worth losing the process over.
+    }
   }
 
   private async drain(): Promise<void> {
@@ -405,7 +471,7 @@ export class DeviceSession {
    * ours. A silent unlock counts as nothing: silence is not a refusal.
    */
   private async ensureLevel1(): Promise<Outcome<never[]> | null> {
-    if (this.access.isUnavailable) {
+    if (this.access.isUnavailable(this.now())) {
       return { status: 'rejected', reason: 'Access Level 1 is unavailable on this device' }
     }
     if (!this.access.needsUnlock(this.now())) {
@@ -417,7 +483,7 @@ export class DeviceSession {
       return null
     }
     if (result.outcome.status === 'rejected') {
-      const final = this.access.recordRefusal()
+      const final = this.access.recordRefusal(this.now())
       const reason = final
         ? `Access Level 1 is unavailable on this device: ${result.outcome.reason}`
         : `Access Level 1 refused: ${result.outcome.reason}`
@@ -426,7 +492,18 @@ export class DeviceSession {
     return result.outcome
   }
 
-  private attempt<T>(spec: ReadSpec<T> | CommandSpec): Promise<AttemptResult<T>> {
+  private async attempt<T>(spec: ReadSpec<T> | CommandSpec): Promise<AttemptResult<T>> {
+    // Do not race a reply that may still be coming for an abandoned request of
+    // this shape. Waiting costs latency once; sending into the ambiguity costs
+    // a wrong answer or a working device that never succeeds again.
+    const quietIn = this.muteRemaining(spec)
+    if (quietIn > 0) {
+      await new Promise<void>((wake) => setTimeout(wake, quietIn))
+    }
+    return this.startAttempt(spec)
+  }
+
+  private startAttempt<T>(spec: ReadSpec<T> | CommandSpec): Promise<AttemptResult<T>> {
     return new Promise<AttemptResult<T>>((resolve) => {
       if (this.closed) {
         resolve({ outcome: CLOSED, retry: 'none' })
@@ -437,7 +514,7 @@ export class DeviceSession {
       const expected = 'expectedReplies' in spec ? (spec.expectedReplies ?? 1) : 1
       const wantPid = requestedPid(spec.message)
       const ackPgn = targetPgn(spec.message)
-      const timeoutMs = spec.timeoutMs ?? this.timeoutMs
+      const timeoutMs = spec.timeoutMs ?? this.adaptiveTimeoutMs
       const collected: T[] = []
       const seen = new Set<string>()
       let settled = false
@@ -462,10 +539,11 @@ export class DeviceSession {
         }
         // Remember what this attempt is still owed, so the next request of the
         // same shape cannot adopt a reply that was meant for this one.
-        this.abandoned.push({
+        this.muted.push({
           acknowledgedPgn: ackPgn,
+          wantsAck: match === undefined,
+          dataPgn: match === undefined ? null : ackPgn,
           pid: wantPid,
-          owed: Math.max(1, expected - collected.length),
           expiresAt: this.now() + timeoutMs
         })
         this.consecutiveTimeouts += 1
@@ -529,10 +607,11 @@ export class DeviceSession {
           if (value === null) {
             return
           }
-          // A repeated reply is one reply. Without this a retransmission, or a
-          // copy the device sent to another node, fills the reply budget and
-          // the genuinely different reply is dropped after the attempt settles.
-          const token = JSON.stringify(value)
+          // A repeated reply is one reply. Keyed on the frame's own fields,
+          // not on the decoded value: two filter types carrying identical
+          // settings decode equal, and deduping on that would discard a
+          // genuinely distinct reply and strand the read one short.
+          const token = JSON.stringify(pgn.fields)
           if (seen.has(token)) {
             return
           }
@@ -547,7 +626,7 @@ export class DeviceSession {
       try {
         this.bus.send(spec.message)
       } catch (error) {
-        this.onError?.(error)
+        this.report(error)
         clearTimeout(timer)
         settled = true
         this.inFlight = null
@@ -572,16 +651,24 @@ export class DeviceSession {
     }
     try {
       const ack = decodeAcknowledge(pgn)
-      if (this.inFlight !== null && this.addressedHere(pgn) && !this.owedElsewhere(pgn, ack)) {
+      // Settle the debt first, and always. A late reply usually arrives while
+      // the session is idle, and leaving the debt outstanding would make the
+      // *next* request pay it with its own legitimate reply.
+      if (this.isMuted(pgn, ack)) {
+        // The device answered a request this session gave up on. That is
+        // evidence the timeout is short for this bus, not that the device is
+        // unreliable, so widen it before the next attempt.
+        this.widenTimeout()
+      } else if (this.inFlight !== null && this.addressedHere(pgn)) {
         this.inFlight.onReply(pgn, ack)
       }
     } catch (error) {
-      this.onError?.(error)
+      this.report(error)
     }
     try {
       this.onObservation?.(pgn)
     } catch (error) {
-      this.onError?.(error)
+      this.report(error)
     }
   }
 
@@ -600,18 +687,44 @@ export class DeviceSession {
     return this.gateway === null || pgn.dst === this.gateway
   }
 
-  /** Whether this reply settles a debt left by an attempt that already gave up. */
-  private owedElsewhere(pgn: DecodedPgn, ack: AcknowledgeResult | null): boolean {
+  /** Every mute that has not lapsed. */
+  private liveMutes(): Muted[] {
     const now = this.now()
-    this.abandoned = this.abandoned.filter((a) => a.expiresAt > now && a.owed > 0)
-    const waiting = this.abandoned.find((a) =>
-      ack !== null ? ack.acknowledgedPgn === a.acknowledgedPgn : replyPid(pgn) === a.pid
-    )
-    if (waiting === undefined) {
-      return false
+    this.muted = this.muted.filter((m) => m.expiresAt > now)
+    return this.muted
+  }
+
+  private matches(m: Muted, pgn: DecodedPgn, ack: AcknowledgeResult | null): boolean {
+    if (ack !== null) {
+      return m.wantsAck && ack.acknowledgedPgn === m.acknowledgedPgn
     }
-    waiting.owed -= 1
-    return true
+    // Never match on an unknown data shape: a null PID would otherwise match
+    // every depth and speed frame the device emits several times a second.
+    return m.dataPgn !== null && pgn.pgn === m.dataPgn && replyPid(pgn) === m.pid
+  }
+
+  /** Whether this reply could belong to an attempt that already gave up. */
+  private isMuted(pgn: DecodedPgn, ack: AcknowledgeResult | null): boolean {
+    return this.liveMutes().some((m) => this.matches(m, pgn, ack))
+  }
+
+  /** How long until no mute covers the shape this spec will ask for. */
+  private muteRemaining(spec: ReadSpec<unknown> | CommandSpec): number {
+    const wantsAck = !('match' in spec)
+    const ackPgn = targetPgn(spec.message)
+    const pid = requestedPid(spec.message)
+    const now = this.now()
+    return this.liveMutes()
+      .filter((m) =>
+        wantsAck
+          ? m.wantsAck && m.acknowledgedPgn === ackPgn
+          : m.dataPgn === ackPgn && m.pid === pid
+      )
+      .reduce((longest, m) => Math.max(longest, m.expiresAt - now), 0)
+  }
+
+  private widenTimeout(): void {
+    this.adaptiveTimeoutMs = Math.min(this.adaptiveTimeoutMs * 2, MAX_ADAPTIVE_TIMEOUT_MS)
   }
 
   private learnGateway(pgn: DecodedPgn): void {
@@ -631,5 +744,9 @@ export class DeviceSession {
   private forgetGateway(): void {
     this.gateway = null
     this.gatewayCandidate = null
+    // Those timeouts may have been caused by the wrong address rather than by
+    // the device, so the shapes they muted prove nothing about what is still
+    // in flight. Keeping them would delay every request of the recovery.
+    this.muted = []
   }
 }

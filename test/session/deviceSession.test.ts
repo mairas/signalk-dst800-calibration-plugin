@@ -240,23 +240,31 @@ describe('DeviceSession', () => {
       expect(bus.sent).toHaveLength(1)
     })
 
-    it('does not let a timed-out read’s late reply answer the next read', async () => {
+    it('never lets a late reply settle anything, whichever arrives first', async () => {
       const first = session.read(readCurve())
       await flush()
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
       await first
 
+      // The next read is held back until the mute lapses, so it cannot race
+      // the device's late answer to the read that gave up.
       const second = session.read(readCurve())
       await flush()
-      // The device's slow answer to the first read, arriving now.
+
+      expect(bus.sent).toHaveLength(1)
+
       bus.deliver(curveReply(OTHER_CURVE, fromDevice()))
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect(bus.sent).toHaveLength(2)
+
+      bus.deliver(curveReply(CURVE, fromDevice()))
       const outcome = await second
 
-      expect(outcome.status).toBe('unknown')
+      expect(outcome.status === 'answered' && outcome.value).toEqual([CURVE])
     })
 
-    it('does not let a timed-out command’s late acknowledgement answer the next command', async () => {
+    it('holds back the next command of a shape whose acknowledgement may still arrive', async () => {
       const first = session.command({ message: setSpeedCurve(DEVICE, CURVE) })
       await flush()
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
@@ -264,25 +272,146 @@ describe('DeviceSession', () => {
 
       const second = session.command({ message: setSpeedCurve(DEVICE, OTHER_CURVE) })
       await flush()
+
+      expect(bus.sent).toHaveLength(1)
+
       bus.deliver(acknowledge({}, fromDevice()))
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
 
-      expect((await second).status).toBe('unknown')
+      expect(bus.sent).toHaveLength(2)
+
+      bus.deliver(acknowledge({}, fromDevice()))
+
+      expect((await second).status).toBe('answered')
     })
 
-    it('stops quarantining once the abandoned reply has arrived', async () => {
+    it('does not hold back an unrelated shape', async () => {
       const first = session.read(readCurve())
       await flush()
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
       await first
 
-      const second = session.read(readCurve())
+      const other = session.read(readPgnLists())
       await flush()
-      bus.deliver(curveReply(OTHER_CURVE, fromDevice()))
-      bus.deliver(curveReply(CURVE, fromDevice()))
-      const outcome = await second
 
-      expect(outcome.status === 'answered' && outcome.value).toEqual([CURVE])
+      expect(bus.sent).toHaveLength(2)
+
+      bus.deliver(pgnListReply('Transmit PGN list', [128267], fromDevice()))
+      bus.deliver(pgnListReply('Receive PGN list', [126208], fromDevice()))
+
+      expect((await other).status).toBe('answered')
+    })
+
+    it('answers a device slower than the timeout instead of failing for ever', async () => {
+      const LATENCY = DEFAULT_TIMEOUT_MS + 500
+
+      // The device answers every request, just later than the session waits.
+      const first = session.read(readCurve())
+      await flush()
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect((await first).status).toBe('unknown')
+
+      // Its answer lands inside the mute, which is what tells the session the
+      // timeout is too short for this bus.
+      await vi.advanceTimersByTimeAsync(LATENCY - DEFAULT_TIMEOUT_MS)
+      bus.deliver(curveReply(CURVE, fromDevice()))
+
+      const second = session.read(readCurve())
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect(bus.sent).toHaveLength(2)
+
+      await vi.advanceTimersByTimeAsync(LATENCY)
+      bus.deliver(curveReply(CURVE, fromDevice()))
+
+      expect((await second).status === 'answered').toBe(true)
+    })
+
+    it('does not dedupe two distinct replies whose decoded values are equal', async () => {
+      // A decoder that discards the discriminating field. The session must key
+      // on the frame, not on what the caller made of it.
+      const pending = session.read({ ...readPgnLists(), match: () => 'same' })
+      await flush()
+      bus.deliver(pgnListReply('Transmit PGN list', [128267], fromDevice()))
+      bus.deliver(pgnListReply('Receive PGN list', [126208], fromDevice()))
+      const outcome = await pending
+
+      expect(outcome.status === 'answered' && outcome.value).toEqual(['same', 'same'])
+    })
+
+    it('does not mute a command’s acknowledgement behind a read that gave up', async () => {
+      const read = session.read(readCurve())
+      await flush()
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await read
+
+      // A read is owed data; it can never be owed an acknowledgement, so the
+      // next write must be sent at once and answered by its own ack.
+      const write = session.command({ message: setSpeedCurve(DEVICE, CURVE) })
+      await flush()
+
+      expect(bus.sent).toHaveLength(2)
+
+      bus.deliver(acknowledge({}, fromDevice()))
+
+      expect((await write).status).toBe('answered')
+    })
+
+    it('does not treat the device’s periodic traffic as a late reply', async () => {
+      // A read of a standard PGN has no proprietary ID, so its mute must be
+      // keyed on the reply PGN too. Keyed on the ID alone it matches every
+      // depth and speed frame, each of which would widen the timeout.
+      const first = session.read(readPgnLists())
+      await flush()
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await first
+
+      for (let i = 0; i < 4; i += 1) {
+        bus.deliver({ pgn: PGN.waterDepth, ...fromDevice(), fields: { depth: 4 + i } })
+      }
+
+      // Past the mute, so the next read is sent at once and can only be
+      // bounded by the timeout itself.
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      let settled = false
+      const second = session.read(readPgnLists())
+      void second.then(() => {
+        settled = true
+      })
+      await flush()
+
+      expect(bus.sent).toHaveLength(2)
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect(settled).toBe(true)
+      expect((await second).status).toBe('unknown')
+    })
+
+    it('stops holding requests back once the learned address is discarded', async () => {
+      await answerOnce()
+      await answerOnce()
+
+      const first = session.read(readCurve())
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await first
+
+      // The second probe waits out the first's mute, then times out itself.
+      const second = session.read(readCurve())
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS * 2)
+      await second
+
+      expect(session.gatewayAddress).toBeNull()
+
+      // Those timeouts were the wrong address, not a slow device, so the
+      // recovery must not queue behind the mutes they left.
+      const sentBefore = bus.sent.length
+      void session.read(readCurve())
+      await flush()
+
+      expect(bus.sent).toHaveLength(sentBefore + 1)
     })
   })
 
@@ -346,8 +475,7 @@ describe('DeviceSession', () => {
 
       for (let i = 0; i < 2; i += 1) {
         const probe = session.read(readCurve())
-        await flush()
-        await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+        await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS * 2)
         await probe
       }
 
@@ -707,6 +835,34 @@ describe('DeviceSession', () => {
       expect((await second).status).toBe('answered')
     })
 
+    it('survives a reporter that throws, without leaving the caller waiting', async () => {
+      const hostile = new DeviceSession({
+        address: DEVICE,
+        bus,
+        now: () => Date.now(),
+        onObservation: () => {
+          throw new Error('cache is down')
+        },
+        onError: () => {
+          throw new Error('logger is down')
+        }
+      })
+      try {
+        bus.failFrom = 1
+        const outcome = await hostile.command({ message: setSpeedCurve(DEVICE, CURVE) })
+
+        expect(outcome.status).not.toBe('answered')
+
+        bus.failFrom = null
+        // The bus dispatch must survive a callback that throws twice over.
+        expect(() => {
+          bus.deliver(curveReply(CURVE, fromDevice()))
+        }).not.toThrow()
+      } finally {
+        hostile.close()
+      }
+    })
+
     it('does not let a throwing cache callback cost a read its answer', async () => {
       const broken = new DeviceSession({
         address: DEVICE,
@@ -767,7 +923,7 @@ describe('DeviceSession', () => {
       await flush()
 
       expect(await pending[MAX_QUEUE_DEPTH + 1]).toEqual({
-        status: 'unknown',
+        status: 'rejected',
         reason: 'The device has a backlog of unanswered requests'
       })
       expect(bus.sent).toHaveLength(1)
@@ -776,7 +932,7 @@ describe('DeviceSession', () => {
       await flush()
       const outcomes = await Promise.all(pending)
 
-      expect(outcomes.every((o) => (o as { status: string }).status === 'unknown')).toBe(true)
+      expect(outcomes.every((o) => (o as { status: string }).status !== 'answered')).toBe(true)
     })
   })
 })

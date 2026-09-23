@@ -71,7 +71,13 @@ A session is bound to one source address for its life. The address changes on an
 
 Correlation is structural, because Airmar's messages carry no transaction id. A reply must come from the device's address, be global or addressed to the gateway, and — for a 126720 — name the proprietary ID that was requested. The serial queue is what makes those enough. Do not add concurrency to the queue.
 
-**A timeout does not end the exchange.** The device may still answer, and every proprietary command acknowledges PGN 126720, so without a quarantine a stale acknowledgement resolves the _next_ operation: a curve write's late reply reports a later restore-default as applied. An abandoned attempt records how many replies of what shape it is still owed, and those are dropped rather than correlated, until they arrive or one timeout passes.
+**A timeout does not end the exchange, and it does not mean a reply is coming either.** Both cases are real and they pull opposite ways. canboatjs drops a fast-packet message that lost a frame, so most timeouts are a reply that will never arrive; a loaded bus also produces replies that are merely late. The session therefore _mutes_ the shape of an abandoned request for one timeout and does not send the next request of that shape until the mute lapses. Nothing is consumed and nothing is counted.
+
+Counting the outstanding replies and consuming them was tried and is wrong in both directions. Where the reply was lost, the debt is paid off by the next request's legitimate reply and a working device fails. Where the device is slow, the debt is consumed by whichever reply lands first, which is as often the fresh one, and the caller is handed the stale value under `answered`. Muting costs latency after a timeout and never a wrong value.
+
+**A reply that arrives inside a mute widens the timeout.** It proves the device answers and that the wait was too short for this bus. Without that, a device slower than the timeout fails every request for ever: each timeout mutes the shape, the mute covers the next reply, and the next request times out in turn. The timeout doubles to a cap of 8 s.
+
+A read is owed data and a command an acknowledgement, never both, and a mute matching an unknown data shape matches nothing. Get either wrong and a timed-out read swallows the next write's acknowledgement, or the device's own depth and speed frames — several a second — count as late replies.
 
 **The gateway's own source address is inferred, and the inference is not sound — only recoverable.** Nothing in the Signal K server exposes the address canboatjs claimed. The session learns it from the `dst` of the reply that _settled_ a request, and adopts it only when two settled requests agree. While it is unknown every `dst` is accepted, so a reply the device sent to another plotter can settle a request and teach that plotter's address. What bounds the damage is that a wrong address makes every request time out, and two consecutive timeouts discard it. One timeout does not: probing a PID the device does not implement is an ordinary event, and resetting on each would make the degraded state permanent.
 
@@ -83,11 +89,17 @@ Every message from the device reaches `onObservation`, including replies that an
 
 **Silence is `unknown`, never failure, and a refusal is never downgraded to silence.** canboatjs drops a fast-packet message that lost a frame without reporting it, which on the wire is indistinguishable from an unimplemented PID. The converse matters as much: after the device denies an operation, a re-unlock that then goes unanswered must not replace the denial with "no answer".
 
-Reads coalesce, commands never. The coalescing key is derived from the frame, so equal keys mean equal frames; two writes under one key would otherwise send one frame and report the first one's success for the second.
+Reads coalesce, commands never. Two reads join only when their frame, decoder and options all match: the same frame is not the same operation, and a caller that asks one question expecting a different answer must not be handed someone else's. Two writes under one key would otherwise send one frame and report the first one's success for the second.
+
+Duplicate replies are recognised by the frame's own fields, not by what a decoder made of them. Two filter types carrying identical settings decode equal, and deduping on that would discard a genuinely distinct reply and strand a two-reply read one short.
+
+Nothing the host supplies may take the process down: `onObservation` and `onError` both run inside `try`, `onError` is never called outside one, and the drain's promise carries a `catch`. A logger that throws during shutdown would otherwise leave a caller's promise pending for ever and raise an unhandled rejection.
+
+A full queue is `rejected`, not `unknown`. The session knows that frame never reached the bus, and a console that cannot tell a refused slot from a lost write will invite the user to write EEPROM again.
 
 Parameter error `Temporary error` and access denied each get exactly one retry, the latter after re-unlocking. Everything else surfaces as the device sent it, with the decoded acknowledgement attached — its 1-based parameter indices are the only way to say which field of a multi-parameter write was refused.
 
-Access Level 1 expires 15 minutes after the unlock and lives in RAM, so the session unlocks lazily and re-unlocks at 14 minutes. It counts refusals rather than acting on the first: an unlock is addressed, and until the gateway address is known the device's refusal of another node's unlock is indistinguishable from a refusal of ours. An unanswered unlock counts as nothing.
+Access Level 1 expires 15 minutes after the unlock and lives in RAM, so the session unlocks lazily and re-unlocks at 14 minutes. It counts refusals rather than acting on the first: an unlock is addressed, and until the gateway address is known the device's refusal of another node's unlock is indistinguishable from a refusal of ours. An unanswered unlock counts as nothing. The refusals lapse after one grant lifetime, so a product that truly has no Level 1 is asked again every fifteen minutes rather than being written off for the session on evidence that may not have been about it at all.
 
 The Access Level clock is monotonic, not the wall clock. A vessel's Pi has no RTC, so it boots stale and steps when GPS lands — caused by the GPS this plugin sits beside.
 

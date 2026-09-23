@@ -51,25 +51,41 @@ describe('AccessLevelState', () => {
   it('does not give up on one refusal, which may have answered another node', () => {
     const state = new AccessLevelState()
 
-    expect(state.recordRefusal()).toBe(false)
-    expect(state.isUnavailable).toBe(false)
+    expect(state.recordRefusal(T0)).toBe(false)
+    expect(state.isUnavailable(T0)).toBe(false)
     expect(REFUSALS_BEFORE_UNAVAILABLE).toBe(2)
   })
 
   it('gives up once the device has refused twice', () => {
     const state = new AccessLevelState()
-    state.recordRefusal()
+    state.recordRefusal(T0)
 
-    expect(state.recordRefusal()).toBe(true)
-    expect(state.isUnavailable).toBe(true)
+    expect(state.recordRefusal(T0)).toBe(true)
+    expect(state.isUnavailable(T0)).toBe(true)
+  })
+
+  it('asks again after a grant lifetime, rather than never', () => {
+    const state = new AccessLevelState()
+    state.recordRefusal(T0)
+    state.recordRefusal(T0)
+
+    expect(state.isUnavailable(T0 + ACCESS_LEVEL_1_TTL_MS - 1)).toBe(true)
+    expect(state.isUnavailable(T0 + ACCESS_LEVEL_1_TTL_MS)).toBe(false)
+  })
+
+  it('does not count refusals a grant lifetime apart as a pair', () => {
+    const state = new AccessLevelState()
+    state.recordRefusal(T0)
+
+    expect(state.recordRefusal(T0 + ACCESS_LEVEL_1_TTL_MS)).toBe(false)
   })
 
   it('discards earlier refusals once an unlock succeeds', () => {
     const state = new AccessLevelState()
-    state.recordRefusal()
+    state.recordRefusal(T0)
     state.recordUnlock(T0)
 
-    expect(state.recordRefusal()).toBe(false)
-    expect(state.isUnavailable).toBe(false)
+    expect(state.recordRefusal(T0)).toBe(false)
+    expect(state.isUnavailable(T0)).toBe(false)
   })
 })
