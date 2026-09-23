@@ -61,7 +61,9 @@ The plugin has **no runtime dependencies**. Everything canboatjs does happens in
 
 Validate before encoding, never clamp. canboatjs truncates silently: an out-of-range frequency wraps into a plausible one, and `NaN` — what an empty number input yields — defeats every comparison and stores as zero. A clamped point is still a curve the user did not ask for, written to EEPROM, with no error from the device.
 
-Treat any acknowledgement code that is not the literal string `Acknowledge` as a failure, including numbers. canboatjs leaves a lookup it cannot name as a raw number, and the error fields are wider than the enumerated values, so defaulting the unknown case to success reports a refused command as applied.
+Treat any acknowledgement code that is not `Acknowledge` as a failure. Codes arrive as canboat's names, or as raw numbers when canboatjs has no name or a provider sets `resolveEnums: false`, which the server passes straight to canboatjs. The codec maps numbers through canboat's lookups, so code 0 is still success and code 3 is still access denied. A number the lookups do not name stays a failure: the error fields are wider than the enumerated values, and defaulting that case to success reports a refused command as applied.
+
+A code that is absent is a failure too. With names resolved, canboatjs drops a 4-bit code of 15 (data not available) from the decoded message, the same as a field a truncated frame never carried, and drops a parameter entry of 15 from the list without leaving a gap. So `decodeAcknowledge` reads an absent code and a raw 15 alike as `No code`, and counts parameter codes missing against `numberOfParameters`. A test decodes all sixteen values of every code field through canboatjs with and without names, which also pins the copied name tables to the installed canboat.
 
 ## Device session
 
@@ -107,7 +109,7 @@ The Access Level clock is monotonic, not the wall clock. A vessel's Pi has no RT
 
 `src/devices/` finds devices, follows one across address changes, and asks it what it supports. `registry.ts` knows every device, `connection.ts` owns the session for one, and `probe.ts` asks one for its capabilities.
 
-**Identity comes from the `/sources` tree, because only the tree has the numeric manufacturer code.** The server files each Address Claim under `sources[label][address].n2k` with a `canName`: the 64-bit NAME as unpadded hex, whose bits 0–20 are the unique number and 21–31 the manufacturer code. canboatjs renders the manufacturer in a decoded claim as a name where it knows one (`Airmar`, not 135), so a claim heard on the bus cannot produce the number a `DeviceKey` persists. The plugin has no runtime dependencies, so a canboat lookup table is not an option.
+**Identity comes from the `/sources` tree, because only the tree has the numeric manufacturer code.** The server files each Address Claim under `sources[label][address].n2k` with a `canName`: the 64-bit NAME as unpadded hex, whose bits 0–20 are the unique number and 21–31 the manufacturer code. canboatjs renders the manufacturer in a decoded claim as a name where it knows one (`Airmar`, not 135), so a claim heard on the bus cannot produce the number a `DeviceKey` persists. The plugin has no runtime dependencies, so it cannot import canboat's manufacturer lookup, and that list is too long and changes too often to copy the way the codec copies the three acknowledgement lookups.
 
 **Claims heard on the bus win over the tree.** The tree lags the bus, and the server restores it from a cache file at boot, so an entry can name an address the device has left. A live claim is matched to a key by unique number and by the manufacturer as canboatjs rendered it — the number itself, or the name the tree records for the same device. A claim at address 254 means the device holds no address.
 

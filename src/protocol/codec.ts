@@ -287,25 +287,93 @@ export interface AcknowledgeResult {
   /** The device's verdict on the commanded priority or transmission interval. */
   intervalPriorityError: string
   parameterErrors: ParameterError[]
+  /**
+   * How many of the declared per-parameter codes are absent from the decoded
+   * list. Non-zero means the positions in `parameterErrors` cannot be trusted:
+   * canboatjs drops an entry it cannot name rather than leaving a gap.
+   */
+  missingParameterCodes: number
 }
 
-const OK = 'Acknowledge'
+/** The device acknowledged with no error. Any other code is a failure. */
+export const ACK_OK = 'Acknowledge'
+
+/** PGN error 3, interval error 3 and parameter error 4: the access level is too low. */
+export const ACCESS_DENIED = 'Access denied'
+
+/** Parameter error 2: the device is momentarily unable to comply. */
+export const TEMPORARY_ERROR = 'Temporary error'
 
 /**
- * Anything that is not the literal acknowledgement string is a failure.
+ * A code field that carries no code.
  *
- * canboatjs leaves a lookup it cannot name as a raw number, and PGN_ERROR_CODE
- * only enumerates 0 to 6 while the field is four bits wide. Defaulting an
- * unrecognised code to success would report a refused command as applied.
+ * All ones in a 4-bit field is "data not available". With names resolved,
+ * canboatjs drops such a field from the decoded message, as it does a field
+ * a truncated frame never carried; with `resolveEnums: false` it arrives as
+ * 15. Both read the same, and both are failures, because a refusal read as
+ * success is a write reported as applied.
  */
-const errorText = (value: unknown): string => {
+export const NO_CODE = 'No code'
+
+const NOT_AVAILABLE_4_BIT = 0xf
+
+/**
+ * The names canboatjs gives each acknowledgement code, indexed by code.
+ *
+ * A code arrives as a number, not a name, in two cases: canboatjs has no name
+ * for it, or the provider set `resolveEnums: false`, which the server passes
+ * straight to canboatjs. In the second case even a clean acknowledgement is
+ * code 0, so without these tables every write would read as refused and
+ * every access-denied reply would miss the re-unlock.
+ *
+ * Copied from PGN_ERROR_CODE, TRANSMISSION_INTERVAL and PARAMETER_FIELD in
+ * `@canboat/ts-pgns` `canboat-lookups.json`, 1.11.18. A test decodes every
+ * code both ways through the installed canboatjs, so a rename there fails it.
+ */
+const PGN_ERROR_NAMES = [
+  ACK_OK,
+  'PGN not supported',
+  'PGN not available',
+  ACCESS_DENIED,
+  'Not supported',
+  'Tag not supported',
+  'Read or Write not supported'
+]
+const INTERVAL_ERROR_NAMES = [
+  ACK_OK,
+  'Transmit Interval/Priority not supported',
+  'Transmit Interval too low',
+  ACCESS_DENIED,
+  'Not supported'
+]
+const PARAMETER_ERROR_NAMES = [
+  ACK_OK,
+  'Invalid parameter field',
+  TEMPORARY_ERROR,
+  'Parameter out of range',
+  ACCESS_DENIED,
+  'Not supported',
+  'Read or Write not supported'
+]
+
+/**
+ * Anything that is not the acknowledgement code is a failure.
+ *
+ * The fields are four bits wide and the lookups name fewer than half the
+ * values. Defaulting an unnamed or absent code to success would report a
+ * refused command as applied.
+ */
+const errorText = (value: unknown, names: readonly string[]): string => {
   if (typeof value === 'string') {
     return value
   }
-  if (value === undefined) {
-    return OK
+  if (value === undefined || value === NOT_AVAILABLE_4_BIT) {
+    return NO_CODE
   }
-  return `Unknown code ${typeof value === 'number' ? String(value) : JSON.stringify(value)}`
+  if (typeof value === 'number') {
+    return names[value] ?? `Unknown code ${String(value)}`
+  }
+  return `Unknown code ${JSON.stringify(value)}`
 }
 
 /**
@@ -320,23 +388,34 @@ const errorText = (value: unknown): string => {
  */
 export function decodeAcknowledge(message: DecodedPgn): AcknowledgeResult | null {
   const fields = message.fields ?? {}
-  if (message.pgn !== PGN.groupFunction || fields.functionCode !== OK) {
+  if (message.pgn !== PGN.groupFunction || fields.functionCode !== ACK_OK) {
     return null
   }
-  const pgnError = errorText(fields.pgnErrorCode)
-  const intervalPriorityError = errorText(fields.transmissionIntervalPriorityErrorCode)
+  const pgnError = errorText(fields.pgnErrorCode, PGN_ERROR_NAMES)
+  const intervalPriorityError = errorText(
+    fields.transmissionIntervalPriorityErrorCode,
+    INTERVAL_ERROR_NAMES
+  )
   const list = Array.isArray(fields.list) ? (fields.list as { parameter?: unknown }[]) : []
   const parameterErrors = list.flatMap((entry, index) => {
-    const error = errorText(entry.parameter)
-    return error === OK ? [] : [{ index: index + 1, error }]
+    const error = errorText(entry.parameter, PARAMETER_ERROR_NAMES)
+    return error === ACK_OK ? [] : [{ index: index + 1, error }]
   })
+  const declared = fields.numberOfParameters
+  const missingParameterCodes =
+    typeof declared === 'number' && declared > list.length ? declared - list.length : 0
   return {
     acknowledgedPgn: typeof fields.pgn === 'number' ? fields.pgn : undefined,
     src: message.src,
-    ok: pgnError === OK && intervalPriorityError === OK && parameterErrors.length === 0,
+    ok:
+      pgnError === ACK_OK &&
+      intervalPriorityError === ACK_OK &&
+      parameterErrors.length === 0 &&
+      missingParameterCodes === 0,
     pgnError,
     intervalPriorityError,
-    parameterErrors
+    parameterErrors,
+    missingParameterCodes
   }
 }
 
