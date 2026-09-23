@@ -4,7 +4,7 @@
  */
 
 import type { Request, Response } from 'express'
-import type { Plugin, PluginRouter, ServerAPI } from '@signalk/server-api'
+import type { Delta, Path, Plugin, PluginRouter, ServerAPI } from '@signalk/server-api'
 import { EventStream } from './api/events.js'
 import { openApi } from './api/openApi.js'
 import { registerRoutes } from './api/routes.js'
@@ -12,6 +12,7 @@ import { createBus } from './protocol/n2kAdapter.js'
 import { ConsoleRuntime } from './runtime.js'
 import { readSetting } from './settings/operations.js'
 import { SIMULATE_REREAD_MS, simulateNotification, simulateStateOf } from './simulate.js'
+import { TELEMETRY_META, startTelemetry } from './telemetry/publisher.js'
 import {
   parsePluginConfig,
   type DeviceKey,
@@ -68,6 +69,7 @@ export default function plugin(app: ServerAPI): Plugin {
   /** The warning state last published; null until one is. */
   let warned: boolean | null = null
   let simulateTimer: ReturnType<typeof setInterval> | null = null
+  let stopTelemetry: (() => void) | null = null
 
   const report = (error: unknown): void => {
     app.debug(error instanceof Error ? (error.stack ?? error.message) : String(error))
@@ -155,8 +157,10 @@ export default function plugin(app: ServerAPI): Plugin {
 
     start() {
       runtime?.close()
+      stopTelemetry?.()
+      const bus = createBus(app)
       runtime = new ConsoleRuntime({
-        bus: createBus(app),
+        bus,
         sources: () => app.getPath('/sources'),
         selected: currentConfig().selectedDevice ?? null,
         onError: report,
@@ -164,6 +168,24 @@ export default function plugin(app: ServerAPI): Plugin {
           publish({ type: 'devices', data: changed.devicesView() })
           publish({ type: 'device', data: changed.deviceView() })
         }
+      })
+      const meta: Partial<Delta> = {
+        updates: [
+          {
+            meta: TELEMETRY_META.map(({ path, ...value }) => ({ path: path as Path, value }))
+          }
+        ]
+      }
+      app.handleMessage(PLUGIN_ID, meta)
+      stopTelemetry = startTelemetry({
+        subscribe: (handler) => bus.subscribe(handler),
+        address: () => runtime?.location?.address ?? null,
+        publish: (values) => {
+          app.handleMessage(PLUGIN_ID, {
+            updates: [{ values: values.map(({ path, value }) => ({ path: path as Path, value })) }]
+          })
+        },
+        onError: report
       })
       simulating.clear()
       warned = null
@@ -181,6 +203,8 @@ export default function plugin(app: ServerAPI): Plugin {
         clearInterval(simulateTimer)
         simulateTimer = null
       }
+      stopTelemetry?.()
+      stopTelemetry = null
       events.close()
       runtime?.close()
       runtime = null
