@@ -103,11 +103,35 @@ Access Level 1 expires 15 minutes after the unlock and lives in RAM, so the sess
 
 The Access Level clock is monotonic, not the wall clock. A vessel's Pi has no RTC, so it boots stale and steps when GPS lands — caused by the GPS this plugin sits beside.
 
+## Devices
+
+`src/devices/` finds devices, follows one across address changes, and asks it what it supports. `registry.ts` knows every device, `connection.ts` owns the session for one, and `probe.ts` asks one for its capabilities.
+
+**Identity comes from the `/sources` tree, because only the tree has the numeric manufacturer code.** The server files each Address Claim under `sources[label][address].n2k` with a `canName`: the 64-bit NAME as unpadded hex, whose bits 0–20 are the unique number and 21–31 the manufacturer code. canboatjs renders the manufacturer in a decoded claim as a name where it knows one (`Airmar`, not 135), so a claim heard on the bus cannot produce the number a `DeviceKey` persists. The plugin has no runtime dependencies, so a canboat lookup table is not an option.
+
+**Claims heard on the bus win over the tree.** The tree lags the bus, and the server restores it from a cache file at boot, so an entry can name an address the device has left. A live claim is matched to a key by unique number and by the manufacturer as canboatjs rendered it — the number itself, or the name the tree records for the same device. A claim at address 254 means the device holds no address.
+
+Live claims are kept per device, not per address. When a newcomer claims an address a device already holds, the two arbitrate and the loser claims elsewhere; evicting the incumbent on the newcomer's claim would close its session with a false "moved". A tree entry, by contrast, loses to any live claim by another device at its address. Where the tree holds one device at two addresses, the address it is heard at wins.
+
+Frames on `N2KAnalyzerOut` carry no provider label, so the registry and the session both key on address alone. One server serves one NMEA 2000 network: two separate networks under one server would share one address space.
+
+**Presence comes only from frames heard since start**, never from the tree. A device is present for 10 s after its last frame of any PGN, ten periods of the DST's 1 s default rate. The registry rereads the tree every second, which is how it catches both a silence, which sends nothing to react to, and a tree update that lands after the claim that caused it.
+
+**Do not filter candidates by manufacturer.** Rebadged Airmar hardware claims its brand's code and still speaks Airmar's protocol. Whether a device is configurable is the probe's answer.
+
+A session is bound to one address, so `DeviceConnection` closes it when the device moves and builds a new one, telling every waiting caller where the device went. A silence at the same address keeps the session.
+
+**The probe unlocks first and counts an access-denied refusal as support.** The manual marks PIDs 35 and 40–44 Access Level 1 without saying whether that gates reads. A refusal with any other code is `rejected` with the device's reason; silence is `noAnswer`, never unsupported. A refusal the session made itself, such as a full queue, carries no acknowledgement and is `noAnswer` too, because the device was never asked.
+
+`configurable` is `unknown`, not `no`, when PID 41 goes unanswered. A probe whose session closed mid-run is marked `interrupted`, and `ProbeCache` will not keep it: its unanswered capabilities were never asked, and the cache is keyed by identity, so it would outlive the move that interrupted it.
+
+Airmar's proprietary PGNs (65287, 65408–65410, 130944) answer only a 126208 Request naming fields 1 and 3, never an ISO Request. `requestAirmarPgn` builds that; standard PGNs take `requestStandardPgn`.
+
 ## canboatjs cannot encode every proprietary message
 
 Three so far: proprietary IDs 1 and 130 have no definition at all (see above), and **Speed Filter (43) cannot be encoded in any field combination** — its variants match on `filterType`, and the encoder throws `Cannot read properties of undefined` for every shape, including the exact field sets `@canboat/ts-pgns` declares. Temperature Filter (44) is defined the same way and is likely the same.
 
-This is an encoder limit, not a decoder one. It matters for test fixtures — the multi-reply tests use PGN 126464, which encodes — and it will matter for Unit 5, which has to _write_ filter settings. Check before designing around a proprietary message: build it, encode it, parse it back.
+This is an encoder limit, not a decoder one. It matters for test fixtures — the multi-reply tests use PGN 126464, which encodes — and for any code that writes filter settings. Check before designing around a proprietary message: build it, encode it, parse it back.
 
 ## HTTP routes
 

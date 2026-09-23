@@ -315,7 +315,10 @@ describe('DeviceSession', () => {
       // Its answer lands inside the mute, which is what tells the session the
       // timeout is too short for this bus.
       await vi.advanceTimersByTimeAsync(LATENCY - DEFAULT_TIMEOUT_MS)
+      expect(session.currentTimeoutMs).toBe(DEFAULT_TIMEOUT_MS)
       bus.deliver(curveReply(CURVE, fromDevice()))
+
+      expect(session.currentTimeoutMs).toBe(2 * DEFAULT_TIMEOUT_MS)
 
       const second = session.read(readCurve())
       await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
@@ -717,6 +720,32 @@ describe('DeviceSession', () => {
       expect(bus.sent).toHaveLength(2)
     })
 
+    it('unlocks on request, with no operation to protect', async () => {
+      const pending = session.unlock()
+      await grantUnlock()
+
+      expect(await pending).toEqual({ status: 'answered', value: undefined })
+      expect(bus.targets()).toEqual([PGN.accessLevel])
+
+      expect((await session.unlock()).status).toBe('answered')
+      expect(bus.sent).toHaveLength(1)
+    })
+
+    it('reports a refused unlock with the device’s acknowledgement', async () => {
+      const pending = session.unlock()
+      await flush()
+      bus.deliver(
+        acknowledge(
+          { acknowledgedPgn: PGN.accessLevel, pgnErrorCode: 'PGN not supported' },
+          fromDevice()
+        )
+      )
+      const outcome = await pending
+
+      expect(outcome.status).toBe('rejected')
+      expect(outcome.status === 'rejected' && outcome.detail?.pgnError).toBe('PGN not supported')
+    })
+
     it('leaves Level 1 available when the unlock goes unanswered', async () => {
       const pending = session.command(writeCurve())
       await flush()
@@ -900,6 +929,18 @@ describe('DeviceSession', () => {
       bus.deliver(curveReply(CURVE, fromDevice()))
 
       expect(observed).toHaveLength(0)
+    })
+
+    it('tells everything outstanding why the session was closed', async () => {
+      expect(session.closedReason).toBeNull()
+      const first = session.read(readCurve())
+      const second = session.read(readPgnLists())
+      await flush()
+      session.close('The device moved to address 30')
+
+      expect(session.closedReason).toBe('The device moved to address 30')
+      expect(await first).toEqual({ status: 'unknown', reason: 'The device moved to address 30' })
+      expect(await second).toEqual({ status: 'unknown', reason: 'The device moved to address 30' })
     })
 
     it('sends nothing more when closed between two attempts of a retry', async () => {

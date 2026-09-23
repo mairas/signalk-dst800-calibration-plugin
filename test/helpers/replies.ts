@@ -118,3 +118,84 @@ export const acknowledge = (options: AckOptions = {}, where: Addressing = {}): D
     }),
     where
   )
+
+export interface Claim {
+  uniqueNumber: number
+  /** As canboatjs renders it: a name it knows, or the raw number. */
+  manufacturerCode: string | number
+}
+
+/** An ISO Address Claim, PGN 60928, as the device would send it at `src`. */
+export const addressClaim = (claim: Claim, src: number): DecodedPgn =>
+  addressed(
+    decode({
+      pgn: PGN.addressClaim,
+      dst: 255,
+      prio: 6,
+      fields: {
+        uniqueNumber: claim.uniqueNumber,
+        manufacturerCode: claim.manufacturerCode,
+        deviceInstanceLower: 0,
+        deviceInstanceUpper: 0,
+        deviceFunction: 130,
+        deviceClass: 'Sensor Communication Interface',
+        systemInstance: 0,
+        industryGroup: 'Marine',
+        arbitraryAddressCapable: 'Yes'
+      }
+    }),
+    { src }
+  )
+
+const AIRMAR_FIELDS = { manufacturerCode: 'Airmar', industryCode: 'Marine Industry' }
+
+/**
+ * A 126720 reply naming `pid`, with no settings.
+ *
+ * Speed Filter and Temperature Filter are built by hand: canboatjs cannot
+ * encode either (issue 22), so they cannot be round-tripped. The probe reads
+ * nothing from a reply but its PGN and proprietary ID.
+ */
+export const pidReply = (pid: AirmarPid, where: Addressing = {}): DecodedPgn => {
+  const proprietaryId = pidName(pid)
+  if (pid === AirmarPid.SpeedFilter || pid === AirmarPid.TemperatureFilter) {
+    return {
+      pgn: PGN.proprietary,
+      src: where.src,
+      dst: where.dst ?? 255,
+      prio: 7,
+      fields: { ...AIRMAR_FIELDS, proprietaryId }
+    }
+  }
+  return addressed(
+    decode({
+      pgn: PGN.proprietary,
+      dst: 255,
+      prio: 7,
+      fields: { ...AIRMAR_FIELDS, proprietaryId }
+    }),
+    where
+  )
+}
+
+/** Minimal field sets that canboatjs encodes for each whole PGN the probe asks for. */
+const PGN_FIELDS: Partial<Record<number, Record<string, unknown>>> = {
+  [PGN.accessLevel]: AIRMAR_FIELDS,
+  [PGN.depthQualityFactor]: AIRMAR_FIELDS,
+  [PGN.speedPulseCount]: AIRMAR_FIELDS,
+  [PGN.deviceInformation]: AIRMAR_FIELDS,
+  [PGN.post]: AIRMAR_FIELDS,
+  [PGN.pgnList]: { functionCode: 'Transmit PGN list', list: [{ pgn: 128267 }] },
+  [PGN.productInformation]: { modelId: 'DST800' },
+  [PGN.configurationInformation]: { installationDescription1: 'bow' },
+  [PGN.distanceLog]: { log: 1000 }
+}
+
+/** A whole-PGN reply, such as Product Information, from the device. */
+export const pgnReply = (pgn: number, where: Addressing = {}): DecodedPgn => {
+  const fields = PGN_FIELDS[pgn]
+  if (fields === undefined) {
+    throw new Error(`No fixture for PGN ${String(pgn)}`)
+  }
+  return addressed(decode({ pgn, dst: 255, prio: 6, fields }), where)
+}

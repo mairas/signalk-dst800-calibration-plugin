@@ -125,6 +125,24 @@ export function requestProprietary(
   return groupFunction(dst, 'Request', PGN.proprietary, params)
 }
 
+/**
+ * Request one of Airmar's own proprietary PGNs, such as 65409 or 130944.
+ *
+ * The manual requires fields 1 and 3 in the request, and none of these PGNs
+ * answers an ISO Request.
+ */
+export function requestAirmarPgn(dst: number, pgn: number): OutgoingPgn {
+  return groupFunction(dst, 'Request', pgn, [
+    { parameter: PARAM.manufacturerCode, value: AIRMAR.manufacturerCode },
+    { parameter: PARAM.industryCode, value: AIRMAR.industryCode }
+  ])
+}
+
+/** Request a standard PGN, such as 126996 Product Information. */
+export function requestStandardPgn(dst: number, pgn: number): OutgoingPgn {
+  return groupFunction(dst, 'Request', pgn, [])
+}
+
 /** Command a proprietary PGN 126720 message. */
 export function commandProprietary(dst: number, pid: AirmarPid, params: Parameter[]): OutgoingPgn {
   const full = [...identity(pid), ...params]

@@ -32,3 +32,7 @@ export const ACCESS_DENIED = 'Access denied'
 
 /** Parameter error code 2: the device is momentarily unable to comply. */
 export const TEMPORARY_ERROR = 'Temporary error'
+
+/** Whether the device refused because the access level was too low. */
+export const isAccessDenied = (ack: AcknowledgeResult): boolean =>
+  ack.pgnError === ACCESS_DENIED || ack.parameterErrors.some((e) => e.error === ACCESS_DENIED)
