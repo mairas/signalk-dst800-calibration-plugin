@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { FakeBus } from '../helpers/FakeBus.js'
+import { decodeLine } from '../helpers/canboat.js'
 import { acknowledge, curveReply, depthCalibrationReply, pgnListReply } from '../helpers/replies.js'
 import {
   DeviceSession,
@@ -518,11 +519,11 @@ describe('DeviceSession', () => {
     it('surfaces a refused transmission interval', async () => {
       const pending = session.command({ message: setSpeedCurve(DEVICE, CURVE) })
       await flush()
-      bus.deliver(acknowledge({ intervalErrorCode: 'Access denied' }, fromDevice()))
+      bus.deliver(acknowledge({ intervalErrorCode: 'Transmit Interval too low' }, fromDevice()))
       const outcome = await pending
 
       expect(outcome.status === 'rejected' && outcome.reason).toBe(
-        'interval or priority: Access denied'
+        'interval or priority: Transmit Interval too low'
       )
     })
 
@@ -657,6 +658,64 @@ describe('DeviceSession', () => {
 
       expect((await pending).status).toBe('rejected')
       expect(bus.sent).toHaveLength(4)
+    })
+
+    it('re-unlocks when the device denies the interval or priority for lack of access', async () => {
+      const pending = session.command(writeCurve())
+      await grantUnlock()
+
+      bus.deliver(acknowledge({ intervalErrorCode: 'Access denied' }, fromDevice()))
+      await flush()
+
+      expect(bus.targets()).toEqual([PGN.accessLevel, PGN.proprietary, PGN.accessLevel])
+
+      bus.deliver(acknowledge({ acknowledgedPgn: PGN.accessLevel }, fromDevice()))
+      await flush()
+      bus.deliver(acknowledge({}, fromDevice()))
+
+      expect((await pending).status).toBe('answered')
+    })
+
+    it('retries once when a temporary error arrives as a raw number', async () => {
+      const pending = session.command({ message: setSpeedCurve(DEVICE, CURVE) })
+      await flush()
+
+      // Acknowledge of 126720, one parameter, parameter code 2, enums unresolved.
+      bus.deliver(
+        decodeLine(
+          `2026-01-01T00:00:00.000Z,3,126208,${String(DEVICE)},${String(GATEWAY)},7,02,00,ef,01,00,01,f2`,
+          { resolveEnums: false }
+        )
+      )
+      await flush()
+
+      expect(bus.targets()).toEqual([PGN.proprietary, PGN.proprietary])
+
+      bus.deliver(acknowledge({}, fromDevice()))
+
+      expect((await pending).status).toBe('answered')
+    })
+
+    it('re-unlocks when the access-denied code arrives as a raw number', async () => {
+      const pending = session.command(writeCurve())
+      await grantUnlock()
+
+      // Acknowledge of 126720 with PGN error code 3, decoded with enums unresolved.
+      bus.deliver(
+        decodeLine(
+          `2026-01-01T00:00:00.000Z,3,126208,${String(DEVICE)},${String(GATEWAY)},6,02,00,ef,01,03,00`,
+          { resolveEnums: false }
+        )
+      )
+      await flush()
+
+      expect(bus.targets()).toEqual([PGN.accessLevel, PGN.proprietary, PGN.accessLevel])
+
+      bus.deliver(acknowledge({ acknowledgedPgn: PGN.accessLevel }, fromDevice()))
+      await flush()
+      bus.deliver(acknowledge({}, fromDevice()))
+
+      expect((await pending).status).toBe('answered')
     })
 
     it('keeps the device’s rejection when the re-unlock goes unanswered', async () => {

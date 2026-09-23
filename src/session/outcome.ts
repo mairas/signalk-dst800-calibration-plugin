@@ -12,7 +12,7 @@
  * later step failing.
  */
 
-import type { AcknowledgeResult } from '../protocol/codec.js'
+import { ACCESS_DENIED, type AcknowledgeResult } from '../protocol/codec.js'
 
 export type Outcome<T> =
   | { status: 'answered'; value: T }
@@ -24,15 +24,10 @@ export type Outcome<T> =
   | { status: 'rejected'; reason: string; detail?: AcknowledgeResult }
   | { status: 'unknown'; reason: string }
 
-/** The device acknowledged with no error. Any other code is a failure. */
-export const ACK_OK = 'Acknowledge'
-
-/** PGN error code 3 and parameter error code 4: the access level is too low. */
-export const ACCESS_DENIED = 'Access denied'
-
-/** Parameter error code 2: the device is momentarily unable to comply. */
-export const TEMPORARY_ERROR = 'Temporary error'
+export { ACK_OK, ACCESS_DENIED, TEMPORARY_ERROR } from '../protocol/codec.js'
 
 /** Whether the device refused because the access level was too low. */
 export const isAccessDenied = (ack: AcknowledgeResult): boolean =>
-  ack.pgnError === ACCESS_DENIED || ack.parameterErrors.some((e) => e.error === ACCESS_DENIED)
+  ack.pgnError === ACCESS_DENIED ||
+  ack.intervalPriorityError === ACCESS_DENIED ||
+  ack.parameterErrors.some((e) => e.error === ACCESS_DENIED)

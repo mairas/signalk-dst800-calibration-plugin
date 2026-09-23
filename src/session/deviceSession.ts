@@ -194,6 +194,11 @@ const describeAcknowledge = (ack: AcknowledgeResult): string => {
   for (const error of ack.parameterErrors) {
     parts.push(`parameter ${String(error.index)}: ${error.error}`)
   }
+  if (ack.missingParameterCodes > 0) {
+    parts.push(
+      `${String(ack.missingParameterCodes)} parameter code(s) missing, so the positions above may be shifted`
+    )
+  }
   return parts.length > 0 ? parts.join('; ') : 'The device reported an unnamed error'
 }
 

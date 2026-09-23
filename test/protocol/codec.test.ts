@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decode, payload } from '../helpers/canboat.js'
+import { decode, decodeLine, payload } from '../helpers/canboat.js'
 import { curveReply } from '../helpers/replies.js'
 import type { DecodedPgn } from '../../src/protocol/messages.js'
 import { CALIBRATE_SPEED_NAME } from '../../src/protocol/pids.js'
@@ -308,7 +308,13 @@ describe('decoding an acknowledgement', () => {
   const ack = (fields: Record<string, unknown>): DecodedPgn => ({
     pgn: 126208,
     src: DST,
-    fields: { functionCode: 'Acknowledge', pgn: 126720, ...fields }
+    fields: {
+      functionCode: 'Acknowledge',
+      pgn: 126720,
+      pgnErrorCode: 'Acknowledge',
+      transmissionIntervalPriorityErrorCode: 'Acknowledge',
+      ...fields
+    }
   })
 
   it('reads a clean acknowledgement as success', () => {
@@ -326,7 +332,8 @@ describe('decoding an acknowledgement', () => {
       ok: true,
       pgnError: 'Acknowledge',
       intervalPriorityError: 'Acknowledge',
-      parameterErrors: []
+      parameterErrors: [],
+      missingParameterCodes: 0
     })
   })
 
@@ -372,6 +379,122 @@ describe('decoding an acknowledgement', () => {
 
     expect(result?.ok).toBe(false)
     expect(result?.intervalPriorityError).toBe('Transmit Interval too low')
+  })
+
+  /**
+   * An Acknowledge of a five-parameter 126720 Command, refusing parameter 4
+   * as out of range: function code 2, PGN 0x01EF00 little-endian, the PGN
+   * and interval error codes in one byte, five parameters, then one 4-bit
+   * code per parameter padded with ones.
+   */
+  const OUT_OF_RANGE_LINE = '2026-01-01T00:00:00.000Z,3,126208,22,100,9,02,00,ef,01,00,05,00,30,f0'
+
+  it.each([
+    ['names', true],
+    ['raw numbers', false]
+  ])('reads a device frame the same when canboatjs gives the codes as %s', (_name, resolve) => {
+    const result = decodeAcknowledge(decodeLine(OUT_OF_RANGE_LINE, { resolveEnums: resolve }))
+
+    expect(result).toEqual({
+      acknowledgedPgn: 126720,
+      src: 22,
+      ok: false,
+      pgnError: 'Acknowledge',
+      intervalPriorityError: 'Acknowledge',
+      parameterErrors: [{ index: 4, error: 'Parameter out of range' }],
+      missingParameterCodes: 0
+    })
+  })
+
+  const hex = (value: number): string => value.toString(16).padStart(2, '0')
+  const line = (length: number, bytes: string): string =>
+    `2026-01-01T00:00:00.000Z,3,126208,22,100,${String(length)},02,00,ef,01,${bytes}`
+  const bothWays = (text: string) => ({
+    named: decodeAcknowledge(decodeLine(text)),
+    raw: decodeAcknowledge(decodeLine(text, { resolveEnums: false }))
+  })
+  const CODES = Array.from({ length: 16 }, (_, code) => code)
+
+  // The error-code byte holds the PGN code in its low nibble and the interval
+  // code in its high nibble.
+  it.each(CODES)('reads PGN error code %d the same with and without names', (code) => {
+    const { named, raw } = bothWays(line(6, `${hex(code)},00`))
+
+    expect(named).toEqual(raw)
+    expect(named?.ok).toBe(code === 0)
+  })
+
+  it.each(CODES)('reads interval error code %d the same with and without names', (code) => {
+    const { named, raw } = bothWays(line(6, `${hex(code << 4)},00`))
+
+    expect(named).toEqual(raw)
+    expect(named?.ok).toBe(code === 0)
+  })
+
+  it.each(CODES)('reads parameter code %d as a failure unless it is 0, either way', (code) => {
+    const { named, raw } = bothWays(line(7, `00,01,${hex(0xf0 | code)}`))
+
+    expect(named?.ok).toBe(code === 0)
+    expect(raw?.ok).toBe(code === 0)
+    // canboatjs drops an entry it cannot name, so only the named codes agree
+    // on the error itself.
+    if (code !== 0xf) {
+      expect(named).toEqual(raw)
+    }
+  })
+
+  it('fails an acknowledgement whose codes are all ones', () => {
+    const { named, raw } = bothWays(line(6, 'ff,00'))
+
+    expect(named?.pgnError).toBe('No code')
+    expect(raw?.pgnError).toBe('No code')
+  })
+
+  it('fails a frame cut off before its error codes', () => {
+    const { named, raw } = bothWays(line(4, '').replace(/,$/, ''))
+
+    expect(named?.ok).toBe(false)
+    expect(raw?.ok).toBe(false)
+  })
+
+  it('fails when fewer parameter codes arrive than the device declared', () => {
+    // Three declared, one code byte: canboatjs yields two entries.
+    const { named } = bothWays(line(7, '00,03,f0'))
+
+    expect(named?.ok).toBe(false)
+    expect(named?.missingParameterCodes).toBeGreaterThan(0)
+  })
+
+  it('reads a clean acknowledgement given as raw numbers as success', () => {
+    const result = decodeAcknowledge(
+      ack({
+        pgnErrorCode: 0,
+        transmissionIntervalPriorityErrorCode: 0,
+        list: [{ parameter: 0 }, { parameter: 0 }]
+      })
+    )
+
+    expect(result?.ok).toBe(true)
+  })
+
+  it.each([
+    ['pgnErrorCode', 3, 'Access denied'],
+    ['pgnErrorCode', 1, 'PGN not supported'],
+    ['transmissionIntervalPriorityErrorCode', 2, 'Transmit Interval too low']
+  ])('names a raw %s %d as %s', (field, code, name) => {
+    const result = decodeAcknowledge(ack({ [field]: code }))
+
+    expect(result?.ok).toBe(false)
+    expect(field === 'pgnErrorCode' ? result?.pgnError : result?.intervalPriorityError).toBe(name)
+  })
+
+  it.each([
+    [2, 'Temporary error'],
+    [4, 'Access denied']
+  ])('names a raw parameter code %d as %s', (code, name) => {
+    const result = decodeAcknowledge(ack({ list: [{ parameter: code }] }))
+
+    expect(result?.parameterErrors).toEqual([{ index: 1, error: name }])
   })
 
   it('reports an uncorrelatable reply rather than inventing a PGN', () => {
