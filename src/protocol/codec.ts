@@ -14,7 +14,6 @@ import {
   ACCESS_LEVEL_1_KEY,
   AIRMAR,
   AirmarPid,
-  CALIBRATE_SPEED_NAME,
   CURVE_FIRST_PAIR_PARAM,
   EepromResetOption,
   MASTER_RESET_PAYLOAD,
@@ -24,7 +23,8 @@ import {
   PARAM,
   PGN,
   RESTORE_DEFAULT_CURVE,
-  eepromResetPayload
+  eepromResetPayload,
+  pidFromName
 } from './pids.js'
 import type { DecodedPgn, OutgoingPgn, OutgoingRaw } from './messages.js'
 
@@ -42,7 +42,8 @@ export {
 
 export interface Parameter {
   parameter: number
-  value: number
+  /** A string only for the ASCII fields of a standard PGN, such as an installation description. */
+  value: number | string
 }
 
 /** A point on the paddlewheel transfer function. */
@@ -431,7 +432,12 @@ export function decodeAcknowledge(message: DecodedPgn): AcknowledgeResult | null
  */
 export function decodeSpeedCurve(message: DecodedPgn): CurvePoint[] | null {
   const fields = message.fields ?? {}
-  if (message.pgn !== PGN.proprietary || fields.proprietaryId !== CALIBRATE_SPEED_NAME) {
+  // Compared as a PID, not as canboat's name for it: with `resolveEnums: false`
+  // the reply carries the number 41.
+  if (
+    message.pgn !== PGN.proprietary ||
+    pidFromName(fields.proprietaryId) !== AirmarPid.CalibrateSpeed
+  ) {
     return null
   }
   const declared = fields.numberOfPairsOfDataPoints

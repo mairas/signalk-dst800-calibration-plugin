@@ -61,9 +61,11 @@ export const MAX_CURVE_POINTS = 25
 
 /** PGN 126720-41 field 6: uint16 at 0.1 Hz. */
 export const MAX_CURVE_HZ = 6553.2
+export const CURVE_HZ_RESOLUTION = 0.1
 
 /** PGN 126720-41 field 7: uint16 at 0.01 m/s. */
 export const MAX_CURVE_SPEED = 655.32
+export const CURVE_SPEED_RESOLUTION = 0.01
 
 /**
  * The display strings canboatjs reports in a reply's `proprietaryId` field.
