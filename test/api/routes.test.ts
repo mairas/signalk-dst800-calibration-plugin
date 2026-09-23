@@ -1,9 +1,11 @@
+import { EventEmitter } from 'node:events'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import plugin from '../../src/index.js'
 import { openApi } from '../../src/api/openApi.js'
 import {
   createJsonResponse,
   createMockServerAPI,
+  createStreamResponse,
   createRecordingRouter,
   type MockServerAPI,
   type RecordedRoute
@@ -170,7 +172,8 @@ describe('REST API', () => {
         'post /api/device/probe': 'admin',
         'get /api/settings': 'readonly',
         'get /api/settings/:id': 'admin',
-        'put /api/settings/:id': 'admin'
+        'put /api/settings/:id': 'admin',
+        'get /api/events': 'readonly'
       })
     })
 
@@ -568,6 +571,213 @@ describe('REST API', () => {
 
       expect((await first).body).toEqual((await second).body)
       expect(sent).toHaveLength(PROBED.length + 1)
+    })
+  })
+
+  describe('event stream', () => {
+    const OTHER: TreeDevice = {
+      address: 30,
+      uniqueNumber: 654321,
+      manufacturerCode: 'Airmar',
+      modelId: 'DST800'
+    }
+
+    /** Open `GET /api/events`; `leave` closes the client side, as a browser tab would. */
+    const openStream = () => {
+      const req = Object.assign(new EventEmitter(), { params: {}, query: {} })
+      const stream = createStreamResponse()
+      void route('get', '/api/events').handler(req, stream.res)
+      return { stream, leave: () => req.emit('close') }
+    }
+    const named = (stream: ReturnType<typeof createStreamResponse>, event: string) =>
+      stream.events().filter((e) => e.event === event)
+
+    it('answers 503 before start', () => {
+      expect(openStream().stream.status).toBe(503)
+    })
+
+    it('opens an uncompressed stream and sends the device list and the selected device first', () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+
+      expect(stream.headers['Content-Type']).toBe('text/event-stream')
+      expect(stream.headers['Cache-Control']).toContain('no-transform')
+      expect(stream.events().map((e) => e.event)).toEqual(['devices', 'device'])
+      expect(stream.events()[1].data).toMatchObject({
+        selected: DST_KEY,
+        location: { state: 'present', address: 22 }
+      })
+    })
+
+    it('pushes the selected device when it is first heard', () => {
+      start({ selectedDevice: DST_KEY })
+      const { stream } = openStream()
+
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({
+        location: { state: 'waiting' }
+      })
+
+      heard()
+
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({
+        location: { state: 'present', address: 22 }
+      })
+    })
+
+    it('pushes the device list when another device is heard', () => {
+      app.sources = sourcesTree([DST, OTHER])
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      const devices = named(stream, 'devices').length
+
+      deliver(pgnReply(PGN.distanceLog, { src: OTHER.address }))
+
+      expect(named(stream, 'devices')).toHaveLength(devices + 1)
+    })
+
+    it('pushes the device list when a model arrives after the claim', async () => {
+      app.sources = sourcesTree([{ ...DST, modelId: undefined }])
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      app.sources = sourcesTree([DST])
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(named(stream, 'devices').at(-1)?.data).toMatchObject({
+        candidates: [{ modelId: 'DST800' }]
+      })
+    })
+
+    it('pushes to every open console, and keeps pushing to the rest when one leaves', () => {
+      app.sources = sourcesTree([DST, OTHER])
+      start({ selectedDevice: DST_KEY })
+      const first = openStream()
+      const second = openStream()
+      heard()
+
+      expect(named(first.stream, 'device').at(-1)?.data).toMatchObject({
+        location: { state: 'present' }
+      })
+      expect(named(second.stream, 'device').at(-1)?.data).toMatchObject({
+        location: { state: 'present' }
+      })
+
+      first.leave()
+      const devices = named(second.stream, 'devices').length
+      deliver(pgnReply(PGN.distanceLog, { src: OTHER.address }))
+
+      expect(named(second.stream, 'devices')).toHaveLength(devices + 1)
+    })
+
+    it('pushes each write with its setting, qualifier and result', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      const pending = call('put', '/api/settings/:id', {
+        params: { id: 'depthOffset' },
+        body: { value: 0.35 }
+      })
+      await flush()
+      deliver(acknowledge({ acknowledgedPgn: PGN.waterDepth }, from))
+      await flush()
+      deliver(depthReply(0.35))
+      await pending
+
+      expect(named(stream, 'setting').at(-1)?.data).toEqual({
+        id: 'depthOffset',
+        qualifier: null,
+        operation: 'write',
+        result: (await pending).body
+      })
+    })
+
+    it('pushes each read with the qualifier it named', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      const pending = call('get', '/api/settings/:id', {
+        params: { id: 'temperatureOffset' },
+        query: { qualifier: '1' }
+      })
+      await vi.advanceTimersByTimeAsync(60_000)
+      await pending
+
+      expect(named(stream, 'setting').at(-1)?.data).toMatchObject({
+        id: 'temperatureOffset',
+        qualifier: 1,
+        operation: 'read',
+        result: { status: 'unknown' }
+      })
+    })
+
+    it('does not push a request refused before the bus', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      await call('put', '/api/settings/:id', {
+        params: { id: 'speedOfSound' },
+        body: { value: 2000 }
+      })
+
+      expect(named(stream, 'setting')).toHaveLength(0)
+    })
+
+    it('pushes a new selection', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      await call('put', '/api/device', { body: { device: null } })
+
+      expect(named(stream, 'device').at(-1)?.data).toEqual({
+        selected: null,
+        location: null,
+        probe: null
+      })
+    })
+
+    it('pushes the selected device once a probe completes', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      respondLikeTheDevice()
+      const { stream } = openStream()
+      const pending = call('post', '/api/device/probe')
+      // Well inside the presence window, so no change of location sends it.
+      await vi.advanceTimersByTimeAsync(1_000)
+      await pending
+
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({
+        location: { state: 'present' },
+        probe: { configurable: 'yes' }
+      })
+    })
+
+    it('stops writing to a client that has gone', async () => {
+      start({ selectedDevice: DST_KEY })
+      const { stream, leave } = openStream()
+      const written = stream.chunks.length
+      leave()
+      heard()
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(stream.chunks).toHaveLength(written)
+    })
+
+    it('keeps an idle stream open with a comment line', async () => {
+      start({ selectedDevice: DST_KEY })
+      const { stream } = openStream()
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(stream.chunks.some((c) => c.startsWith(':'))).toBe(true)
+    })
+
+    it('ends every stream when the plugin stops', async () => {
+      start({ selectedDevice: DST_KEY })
+      const { stream } = openStream()
+      await started.stop()
+
+      expect(stream.ended).toBe(true)
     })
   })
 

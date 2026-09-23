@@ -1,5 +1,6 @@
 import type { Candidate, Location } from './devices/registry.js'
 import type { ProbeResult } from './devices/probe.js'
+import type { ReadResult, WriteResult } from './settings/operations.js'
 import type { Qualifier } from './settings/registry.js'
 
 export type { Candidate, Location } from './devices/registry.js'
@@ -74,6 +75,20 @@ export interface SettingInfo {
 export interface SettingsResponse {
   settings: SettingInfo[]
 }
+
+/** A read or write of a setting, pushed to every open console once it completes. */
+export interface SettingEvent {
+  id: string
+  qualifier: number | null
+  operation: 'read' | 'write'
+  result: ReadResult | WriteResult
+}
+
+/** An event on `GET /api/events`: `type` is the event name, `data` its body. */
+export type ServerEvent =
+  | { type: 'devices'; data: DevicesResponse }
+  | { type: 'device'; data: DeviceResponse }
+  | { type: 'setting'; data: SettingEvent }
 
 const isField = (value: unknown, bits: number): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < 2 ** bits

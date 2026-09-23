@@ -10,7 +10,7 @@ import { DeviceConnection } from './devices/connection.js'
 import { ProbeCache, probe, type ProbeResult } from './devices/probe.js'
 import { DeviceRegistry, sameKey, type Location } from './devices/registry.js'
 import { DeviceSession, type Bus } from './session/deviceSession.js'
-import type { DeviceKey } from './types.js'
+import type { DeviceKey, DeviceResponse, DevicesResponse } from './types.js'
 
 export interface RuntimeOptions {
   bus: Bus
@@ -20,6 +20,11 @@ export interface RuntimeOptions {
   onError: (error: unknown) => void
   /** Monotonic milliseconds. */
   now?: () => number
+  /**
+   * Called when the device list, the selection, the selected device's location
+   * or its cached probe may have changed. Carries no payload: re-read the views.
+   */
+  onChange?: (runtime: ConsoleRuntime) => void
 }
 
 export class ConsoleRuntime {
@@ -29,6 +34,7 @@ export class ConsoleRuntime {
   private readonly bus: Bus
   private readonly onError: (error: unknown) => void
   private readonly now: () => number
+  private readonly onChange: ((runtime: ConsoleRuntime) => void) | undefined
   private key: DeviceKey | null = null
   private connection: DeviceConnection | null = null
   private pending: { session: DeviceSession; result: Promise<ProbeResult> } | null = null
@@ -37,11 +43,15 @@ export class ConsoleRuntime {
     this.bus = options.bus
     this.onError = options.onError
     this.now = options.now ?? (() => performance.now())
+    this.onChange = options.onChange
     this.registry = new DeviceRegistry({
       sources: options.sources,
       subscribe: (handler) => options.bus.subscribe(handler),
       now: this.now,
       onError: options.onError
+    })
+    this.registry.onChange(() => {
+      this.changed()
     })
     this.select(options.selected)
   }
@@ -81,8 +91,12 @@ export class ConsoleRuntime {
             registry: this.registry,
             key,
             createSession: (address) =>
-              new DeviceSession({ address, bus: this.bus, now: this.now, onError: this.onError })
+              new DeviceSession({ address, bus: this.bus, now: this.now, onError: this.onError }),
+            onChange: () => {
+              this.changed()
+            }
           })
+    this.changed()
   }
 
   /**
@@ -99,6 +113,7 @@ export class ConsoleRuntime {
     const result = probe(session).then((found) => {
       if (key !== null) {
         this.probes.set(key, found)
+        this.changed()
       }
       return found
     })
@@ -111,6 +126,25 @@ export class ConsoleRuntime {
     }
     void result.then(clear, clear)
     return result
+  }
+
+  /** Body of `GET /api/devices`. */
+  devicesView(): DevicesResponse {
+    return { candidates: this.registry.candidates() }
+  }
+
+  /** Body of `GET /api/device`. */
+  deviceView(): DeviceResponse {
+    const key = this.key
+    return {
+      selected: key,
+      location: this.location,
+      probe: key === null ? null : (this.probes.get(key) ?? null)
+    }
+  }
+
+  private changed(): void {
+    this.onChange?.(this)
   }
 
   close(): void {

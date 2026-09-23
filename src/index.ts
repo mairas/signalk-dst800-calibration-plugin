@@ -5,6 +5,7 @@
 
 import type { Request, Response } from 'express'
 import type { Plugin, PluginRouter, ServerAPI } from '@signalk/server-api'
+import { EventStream } from './api/events.js'
 import { openApi } from './api/openApi.js'
 import { registerRoutes } from './api/routes.js'
 import { createBus } from './protocol/n2kAdapter.js'
@@ -55,6 +56,7 @@ interface StoredOptions {
 
 export default function plugin(app: ServerAPI): Plugin {
   let runtime: ConsoleRuntime | null = null
+  const events = new EventStream()
 
   /**
    * Read the configuration the server currently holds.
@@ -111,12 +113,17 @@ export default function plugin(app: ServerAPI): Plugin {
         selected: currentConfig().selectedDevice ?? null,
         onError: (error) => {
           app.debug(error instanceof Error ? (error.stack ?? error.message) : String(error))
+        },
+        onChange: (changed) => {
+          events.send({ type: 'devices', data: changed.devicesView() })
+          events.send({ type: 'device', data: changed.deviceView() })
         }
       })
       app.setPluginStatus('Started')
     },
 
     stop() {
+      events.close()
       runtime?.close()
       runtime = null
       app.setPluginStatus('Stopped')
@@ -136,6 +143,7 @@ export default function plugin(app: ServerAPI): Plugin {
       })
       registerRoutes(router, {
         runtime: () => runtime,
+        events,
         select: async (key) => {
           await saveSelection(key)
           runtime?.select(key)

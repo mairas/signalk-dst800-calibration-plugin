@@ -127,3 +127,72 @@ export function createJsonResponse(): { status: number; body: unknown; res: unkn
   captured.res = res
   return captured
 }
+
+/** One Server-Sent Event as a client would parse it. */
+export interface StreamedEvent {
+  event: string
+  data: unknown
+}
+
+/**
+ * Express Response double for an event stream: captures the head, every
+ * chunk written, and whether the stream was ended. Falls back to the JSON
+ * double's `status` and `json` for a handler that answers with an error.
+ */
+export function createStreamResponse(): {
+  status: number
+  headers: Record<string, string>
+  chunks: string[]
+  ended: boolean
+  /** The complete events written so far, in order. */
+  events: () => StreamedEvent[]
+  res: unknown
+} {
+  const captured = {
+    status: 200,
+    headers: {} as Record<string, string>,
+    chunks: [] as string[],
+    ended: false,
+    body: undefined as unknown,
+    events: (): StreamedEvent[] =>
+      captured.chunks
+        .join('')
+        .split('\n\n')
+        .filter((block) => block.startsWith('event: '))
+        .map((block) => {
+          const [eventLine, dataLine] = block.split('\n')
+          return {
+            event: eventLine.slice('event: '.length),
+            data: JSON.parse(dataLine.slice('data: '.length)) as unknown
+          }
+        }),
+    res: undefined as unknown
+  }
+  const res = {
+    status(code: number) {
+      captured.status = code
+      return res
+    },
+    json(value: unknown) {
+      captured.body = value
+      return res
+    },
+    writeHead(code: number, headers: Record<string, string>) {
+      captured.status = code
+      captured.headers = headers
+      return res
+    },
+    write(chunk: string) {
+      if (captured.ended) {
+        throw new Error('write after end')
+      }
+      captured.chunks.push(chunk)
+      return true
+    },
+    end() {
+      captured.ended = true
+    }
+  }
+  captured.res = res
+  return captured
+}
