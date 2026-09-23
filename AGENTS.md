@@ -65,19 +65,37 @@ Treat any acknowledgement code that is not the literal string `Acknowledge` as a
 
 ## Device session
 
-`src/session/` owns every conversation with a device. One `DeviceSession` per device, one request in flight at a time.
+`src/session/` owns every conversation with a device. One `DeviceSession` per device, one request in flight at a time, one session per device — two sessions on one address each see the other's replies and can adopt them.
 
-Airmar's messages carry no transaction id, so correlation is structural: a reply must come from the device's source address, and it must be global or addressed to the gateway. The serial queue is what makes that enough. Do not add concurrency to the queue — two outstanding requests to one device cannot be told apart.
+A session is bound to one source address for its life. The address changes on an NMEA 2000 re-claim, and this plugin's own master reset causes one, so the owner closes the session and builds a new one rather than expecting it to follow the device.
 
-**The gateway's own source address is inferred, not read.** Nothing in the Signal K server exposes the address canboatjs claimed. The session learns it from the `dst` of replies that answered its own requests, adopts it only after two agreeing observations, and discards it on any timeout. Until it is known, an addressed reply meant for another plotter is accepted — the documented degradation. One observation is not enough: a wrong address filters out every real reply, and the timeout reset is what stops that being permanent.
+Correlation is structural, because Airmar's messages carry no transaction id. A reply must come from the device's address, be global or addressed to the gateway, and — for a 126720 — name the proprietary ID that was requested. The serial queue is what makes those enough. Do not add concurrency to the queue.
 
-Every message from the device reaches `onObservation`, including replies that answer nobody and replies that arrive after their request timed out. They cannot resolve a request, but they are still the device's true state.
+**A timeout does not end the exchange.** The device may still answer, and every proprietary command acknowledges PGN 126720, so without a quarantine a stale acknowledgement resolves the _next_ operation: a curve write's late reply reports a later restore-default as applied. An abandoned attempt records how many replies of what shape it is still owed, and those are dropped rather than correlated, until they arrive or one timeout passes.
 
-**Silence is `unknown`, never failure.** canboatjs drops a fast-packet message that lost a frame without reporting it, and on the wire that is indistinguishable from a PID the device does not implement. An `Outcome` is three-valued for that reason; collapsing it would let the console report a supported setting as missing.
+**The gateway's own source address is inferred, and the inference is not sound — only recoverable.** Nothing in the Signal K server exposes the address canboatjs claimed. The session learns it from the `dst` of the reply that _settled_ a request, and adopts it only when two settled requests agree. While it is unknown every `dst` is accepted, so a reply the device sent to another plotter can settle a request and teach that plotter's address. What bounds the damage is that a wrong address makes every request time out, and two consecutive timeouts discard it. One timeout does not: probing a PID the device does not implement is an ordinary event, and resetting on each would make the degraded state permanent.
 
-Parameter error `Temporary error` and access denied each get exactly one retry, the latter after re-unlocking. Everything else surfaces as the device sent it.
+Learn only from a settled reply. `finish` runs once per attempt, so two observations are always two exchanges; learning from every matching reply would let one multi-reply read adopt an address from a single foreign answer.
 
-Access Level 1 expires 15 minutes after the unlock and lives in RAM, so the session unlocks lazily and re-unlocks at 14 minutes. A NAKed unlock is sticky: that product has no Level 1, and retrying it would repeat on every later operation. An unlock that goes unanswered is not sticky, because silence is not a refusal.
+Every message from the device reaches `onObservation`, including replies that answer nobody and replies that arrive after their request timed out. They cannot resolve a request, but they are still the device's true state. It runs _after_ correlation and inside a `try`, so a broken cache cannot cost a request its answer.
+
+**Nothing in the bus handler may throw.** It runs inside the server's own event dispatch, where an uncaught exception stops the Signal K process — on a vessel, the process feeding the autopilot and the anchor alarm. The same applies to `bus.send`: `app.emit` re-throws a listener's exception synchronously, so a canboatjs encode failure becomes an `unknown` outcome rather than a rejected promise. A queued task always settles its caller; a task that escaped would leave the drain loop flagged busy and every later request pending for ever.
+
+**Silence is `unknown`, never failure, and a refusal is never downgraded to silence.** canboatjs drops a fast-packet message that lost a frame without reporting it, which on the wire is indistinguishable from an unimplemented PID. The converse matters as much: after the device denies an operation, a re-unlock that then goes unanswered must not replace the denial with "no answer".
+
+Reads coalesce, commands never. The coalescing key is derived from the frame, so equal keys mean equal frames; two writes under one key would otherwise send one frame and report the first one's success for the second.
+
+Parameter error `Temporary error` and access denied each get exactly one retry, the latter after re-unlocking. Everything else surfaces as the device sent it, with the decoded acknowledgement attached — its 1-based parameter indices are the only way to say which field of a multi-parameter write was refused.
+
+Access Level 1 expires 15 minutes after the unlock and lives in RAM, so the session unlocks lazily and re-unlocks at 14 minutes. It counts refusals rather than acting on the first: an unlock is addressed, and until the gateway address is known the device's refusal of another node's unlock is indistinguishable from a refusal of ours. An unanswered unlock counts as nothing.
+
+The Access Level clock is monotonic, not the wall clock. A vessel's Pi has no RTC, so it boots stale and steps when GPS lands — caused by the GPS this plugin sits beside.
+
+## canboatjs cannot encode every proprietary message
+
+Three so far: proprietary IDs 1 and 130 have no definition at all (see above), and **Speed Filter (43) cannot be encoded in any field combination** — its variants match on `filterType`, and the encoder throws `Cannot read properties of undefined` for every shape, including the exact field sets `@canboat/ts-pgns` declares. Temperature Filter (44) is defined the same way and is likely the same.
+
+This is an encoder limit, not a decoder one. It matters for test fixtures — the multi-reply tests use PGN 126464, which encodes — and it will matter for Unit 5, which has to _write_ filter settings. Check before designing around a proprietary message: build it, encode it, parse it back.
 
 ## HTTP routes
 

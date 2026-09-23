@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   AccessLevelState,
   ACCESS_LEVEL_1_TTL_MS,
-  ACCESS_LEVEL_1_REFRESH_MS
+  ACCESS_LEVEL_1_REFRESH_MS,
+  REFUSALS_BEFORE_UNAVAILABLE
 } from '../../src/session/accessLevel.js'
 
 const T0 = 1_700_000_000_000
@@ -18,12 +19,19 @@ describe('AccessLevelState', () => {
     expect(state.needsUnlock(T0)).toBe(false)
   })
 
-  it('re-unlocks before the device expires the level, not after', () => {
+  it('re-unlocks a minute before the device expires the level', () => {
     const state = new AccessLevelState()
     state.recordUnlock(T0)
-    expect(ACCESS_LEVEL_1_REFRESH_MS).toBeLessThan(ACCESS_LEVEL_1_TTL_MS)
+
+    expect(ACCESS_LEVEL_1_TTL_MS - ACCESS_LEVEL_1_REFRESH_MS).toBe(60_000)
     expect(state.needsUnlock(T0 + ACCESS_LEVEL_1_REFRESH_MS - 1)).toBe(false)
     expect(state.needsUnlock(T0 + ACCESS_LEVEL_1_REFRESH_MS)).toBe(true)
+  })
+
+  it('treats a clock that went backwards as an expired grant', () => {
+    const state = new AccessLevelState()
+    state.recordUnlock(T0)
+    expect(state.needsUnlock(T0 - 1)).toBe(true)
   })
 
   it('forgets the unlock when the device reports access denied', () => {
@@ -33,17 +41,35 @@ describe('AccessLevelState', () => {
     expect(state.needsUnlock(T0)).toBe(true)
   })
 
-  it('reports Level 1 unavailable only once the device has refused the unlock', () => {
+  it('forgets the unlock after an operation that resets the device', () => {
     const state = new AccessLevelState()
+    state.recordUnlock(T0)
+    state.forget()
+    expect(state.needsUnlock(T0)).toBe(true)
+  })
+
+  it('does not give up on one refusal, which may have answered another node', () => {
+    const state = new AccessLevelState()
+
+    expect(state.recordRefusal()).toBe(false)
     expect(state.isUnavailable).toBe(false)
-    state.markUnavailable()
+    expect(REFUSALS_BEFORE_UNAVAILABLE).toBe(2)
+  })
+
+  it('gives up once the device has refused twice', () => {
+    const state = new AccessLevelState()
+    state.recordRefusal()
+
+    expect(state.recordRefusal()).toBe(true)
     expect(state.isUnavailable).toBe(true)
   })
 
-  it('stays unavailable across a later unlock attempt', () => {
+  it('discards earlier refusals once an unlock succeeds', () => {
     const state = new AccessLevelState()
-    state.markUnavailable()
+    state.recordRefusal()
     state.recordUnlock(T0)
-    expect(state.isUnavailable).toBe(true)
+
+    expect(state.recordRefusal()).toBe(false)
+    expect(state.isUnavailable).toBe(false)
   })
 })

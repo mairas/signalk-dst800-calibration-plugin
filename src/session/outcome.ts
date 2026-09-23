@@ -6,10 +6,22 @@
  * wire is indistinguishable from a PID the device does not implement. Folding
  * both into "failed" would let the console tell the user a supported setting
  * does not exist.
+ *
+ * The converse matters as much. A device that refuses an operation has told
+ * us something firm, so a rejection must never be downgraded to silence by a
+ * later step failing.
  */
+
+import type { AcknowledgeResult } from '../protocol/codec.js'
+
 export type Outcome<T> =
   | { status: 'answered'; value: T }
-  | { status: 'rejected'; reason: string }
+  /**
+   * The device refused. `detail` carries the decoded acknowledgement, whose
+   * 1-based parameter indices are the only way to tell the user which field
+   * of a multi-parameter write was refused; `reason` is for logs.
+   */
+  | { status: 'rejected'; reason: string; detail?: AcknowledgeResult }
   | { status: 'unknown'; reason: string }
 
 /** The device acknowledged with no error. Any other code is a failure. */

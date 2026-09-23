@@ -73,7 +73,7 @@ export const MAX_CURVE_SPEED = 655.32
  * and EEPROM restore are absent from the canboat lookup and stay absent here;
  * neither is acknowledged, so neither is ever matched against a reply.
  */
-const PID_NAMES: Partial<Record<AirmarPid, string>> = {
+const PID_NAMES = {
   [AirmarPid.SimulateMode]: 'Simulate Mode',
   [AirmarPid.CalibrateDepth]: 'Calibrate Depth',
   [AirmarPid.CalibrateSpeed]: 'Calibrate Speed',
@@ -81,11 +81,13 @@ const PID_NAMES: Partial<Record<AirmarPid, string>> = {
   [AirmarPid.SpeedFilter]: 'Speed Filter',
   [AirmarPid.TemperatureFilter]: 'Temperature Filter',
   [AirmarPid.Nmea2000Options]: 'NMEA 2000 options'
-}
+} as const
+
+const NAME_BY_PID: Record<number, string | undefined> = PID_NAMES
 
 /** The string canboatjs reports for this PID, or null when it reports none. */
 export function pidName(pid: AirmarPid): string | null {
-  return PID_NAMES[pid] ?? null
+  return NAME_BY_PID[pid] ?? null
 }
 
 /**
@@ -97,7 +99,7 @@ export function pidName(pid: AirmarPid): string | null {
  */
 export function pidFromName(value: unknown): AirmarPid | null {
   if (typeof value === 'string') {
-    const found = Object.entries(PID_NAMES).find(([, name]) => name === value)
+    const found = Object.entries(NAME_BY_PID).find(([, name]) => name === value)
     return found === undefined ? null : Number(found[0])
   }
   if (typeof value === 'number' && Number.isInteger(value) && value in AirmarPid) {
@@ -106,8 +108,15 @@ export function pidFromName(value: unknown): AirmarPid | null {
   return null
 }
 
-/** canboatjs resolves the proprietary ID lookup to this name in a reply. */
-export const CALIBRATE_SPEED_NAME = pidName(AirmarPid.CalibrateSpeed) ?? ''
+/**
+ * canboatjs resolves the proprietary ID lookup to this name in a reply.
+ *
+ * Read straight out of the table rather than through `pidName`, so it is
+ * typed as the literal string. A nullable here with an empty-string default
+ * would turn a lost table entry into a decoder that silently matches no real
+ * reply, which is the one failure this constant must not have.
+ */
+export const CALIBRATE_SPEED_NAME = PID_NAMES[AirmarPid.CalibrateSpeed]
 
 /** Field 5 of PGN 126720-41: restore the factory default curve. */
 export const RESTORE_DEFAULT_CURVE = 0xfe
