@@ -844,6 +844,23 @@ describe('DeviceSession', () => {
       bus.deliver(acknowledge({}, fromDevice()))
       await next
     })
+
+    it('unlocks again before a raw frame, however recent the last grant', async () => {
+      const write = session.command(writeCurve())
+      await grantUnlock()
+      bus.deliver(acknowledge({}, fromDevice()))
+      await write
+
+      const pending = session.sendRaw(masterReset(DEVICE), { requiresLevel1: true })
+      await flush()
+
+      expect(bus.targets()).toEqual([PGN.accessLevel, PGN.proprietary, PGN.accessLevel])
+
+      await grantUnlock()
+
+      expect(await pending).toEqual({ status: 'answered', value: undefined })
+      expect(bus.targets().at(-1)).toBe(PGN.proprietary)
+    })
   })
 
   describe('failures that must not reach the server', () => {

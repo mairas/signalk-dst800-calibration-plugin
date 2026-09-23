@@ -11,11 +11,20 @@ import {
   type RecordedRoute
 } from '../helpers/MockServerAPI.js'
 import { decode } from '../helpers/canboat.js'
-import { acknowledge, pgnReply, pidReply } from '../helpers/replies.js'
+import { acknowledge, addressClaim, pgnReply, pidReply } from '../helpers/replies.js'
 import { sourcesTree, type TreeDevice } from '../helpers/sources.js'
 import { PROBED, capabilityId } from '../../src/devices/probe.js'
 import type { DecodedPgn, OutgoingPgn } from '../../src/protocol/messages.js'
-import { PARAM, PGN } from '../../src/protocol/pids.js'
+import {
+  AirmarPid,
+  EepromResetOption,
+  MASTER_RESET_PAYLOAD,
+  PARAM,
+  PGN,
+  eepromResetPayload
+} from '../../src/protocol/pids.js'
+import { RESET_CLAIM_TIMEOUT_MS } from '../../src/runtime.js'
+import { SIMULATE_NOTIFICATION_PATH, SIMULATE_REREAD_MS } from '../../src/simulate.js'
 import { buildCommand, buildRead } from '../../src/settings/registry.js'
 import type { DeviceKey } from '../../src/types.js'
 
@@ -83,11 +92,11 @@ describe('REST API', () => {
   })
 
   /**
-   * Answer the bus like the device: grant the unlock, and treat each probed
-   * capability per `reactions`, keyed by `capabilityId`. Anything absent is
-   * answered.
+   * Answer the bus like the device: treat the unlock per `reactions.unlock`,
+   * and each probed capability per `reactions`, keyed by `capabilityId`.
+   * Anything absent is answered.
    */
-  const respondLikeTheDevice = (reactions: Record<string, Reaction> = {}) => {
+  const respondLikeTheDevice = (reactions: Partial<Record<string, Reaction>> = {}) => {
     app.events.on('nmea2000JsonOut', (message: OutgoingPgn) => {
       const target = Number(message.fields.pgn)
       const list = message.fields.list as { parameter: number; value: number }[]
@@ -100,7 +109,7 @@ describe('REST API', () => {
         pid === undefined
           ? capabilityId({ kind: 'pgn', pgn: target })
           : capabilityId({ kind: 'pid', pid })
-      const reaction = isUnlock ? 'answer' : (reactions[id] ?? 'answer')
+      const reaction = (isUnlock ? reactions.unlock : reactions[id]) ?? 'answer'
       if (reaction === 'silent') {
         return
       }
@@ -160,6 +169,16 @@ describe('REST API', () => {
     started.start(configuration, () => undefined)
   }
 
+  /** Open `GET /api/events`; `leave` closes the client side, as a browser tab would. */
+  const openStream = () => {
+    const req = Object.assign(new EventEmitter(), { params: {}, query: {} })
+    const stream = createStreamResponse()
+    void route('get', '/api/events').handler(req, stream.res)
+    return { stream, leave: () => req.emit('close') }
+  }
+  const named = (stream: ReturnType<typeof createStreamResponse>, event: string) =>
+    stream.events().filter((e) => e.event === event)
+
   describe('access', () => {
     it('lets a read-only login read what the plugin holds, and keeps every route that sends a frame at admin', () => {
       const levels = Object.fromEntries(routes.map((r) => [`${r.method} ${r.path}`, r.access]))
@@ -170,6 +189,8 @@ describe('REST API', () => {
         'get /api/device': 'readonly',
         'put /api/device': 'admin',
         'post /api/device/probe': 'admin',
+        'post /api/device/reset': 'admin',
+        'post /api/device/restore': 'admin',
         'get /api/settings': 'readonly',
         'get /api/settings/:id': 'admin',
         'put /api/settings/:id': 'admin',
@@ -574,6 +595,252 @@ describe('REST API', () => {
     })
   })
 
+  describe('resetting the device', () => {
+    let raw: string[]
+
+    beforeEach(() => {
+      raw = []
+      app.events.on('nmea2000out', (line: string) => raw.push(line))
+    })
+
+    const claim = () => {
+      deliver(
+        addressClaim({ uniqueNumber: DST.uniqueNumber, manufacturerCode: 'Airmar' }, DST.address)
+      )
+    }
+    /** How many times the device was asked for `pid`. */
+    const requestsFor = (pid: number) =>
+      sent.filter(
+        (m) =>
+          m.fields.functionCode === 'Request' &&
+          (m.fields.list as { parameter: number; value: number }[]).some(
+            (p) => p.parameter === PARAM.proprietaryId && p.value === pid
+          )
+      ).length
+    /** PGN, source and destination of a raw frame line. */
+    const addressing = (line: string) => line.split(',').slice(2, 5)
+
+    it('reboots the device, drops its probe, waits for its claim, and probes it again', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      respondLikeTheDevice()
+      const probed = call('post', '/api/device/probe')
+      await vi.advanceTimersByTimeAsync(60_000)
+      await probed
+      const { stream } = openStream()
+      const pending = call('post', '/api/device/reset')
+      await flush()
+
+      expect(raw).toHaveLength(1)
+      expect(addressing(raw[0])).toEqual([String(PGN.proprietary), '0', '22'])
+      expect(raw[0].endsWith(MASTER_RESET_PAYLOAD)).toBe(true)
+      expect((await call('get', '/api/device')).body).toMatchObject({ probe: null })
+
+      claim()
+      await vi.advanceTimersByTimeAsync(60_000)
+      const response = await pending
+
+      expect(response.body).toMatchObject({ status: 'claimed', probe: { configurable: 'yes' } })
+      expect(propertiesOf(documented('/api/device/reset', 'post'))).toEqual(
+        expect.arrayContaining(keys(response.body))
+      )
+      expect(named(stream, 'reset').map((e) => e.data)).toEqual([response.body])
+    })
+
+    it('probes afresh after the claim, even when a probe was running as the reset went out', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      // Simulate Mode holds the first probe while the reset is queued; POST
+      // keeps it running after the reset frame has gone out.
+      respondLikeTheDevice({
+        'pid:35': 'silent',
+        [capabilityId({ kind: 'pgn', pgn: PGN.post })]: 'silent'
+      })
+      void call('post', '/api/device/probe')
+      await flush()
+      const pending = call('post', '/api/device/reset')
+      while (raw.length === 0) {
+        await vi.advanceTimersByTimeAsync(100)
+      }
+      claim()
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect((await pending).body).toMatchObject({ status: 'claimed' })
+      expect(requestsFor(AirmarPid.CalibrateSpeed)).toBe(2)
+    })
+
+    it('sends nothing and tells no console when the device refuses the unlock', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      respondLikeTheDevice({ unlock: { error: 'Access denied' } })
+      const { stream } = openStream()
+      const pending = call('post', '/api/device/reset')
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect((await pending).body).toMatchObject({ status: 'notSent' })
+      expect(raw).toHaveLength(0)
+      expect(named(stream, 'reset')).toHaveLength(0)
+    })
+
+    it('keeps no probe that ran across a reset the device never came back from', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      respondLikeTheDevice({
+        'pid:35': 'silent',
+        [capabilityId({ kind: 'pgn', pgn: PGN.post })]: 'silent'
+      })
+      void call('post', '/api/device/probe')
+      await flush()
+      const pending = call('post', '/api/device/reset')
+      await vi.advanceTimersByTimeAsync(RESET_CLAIM_TIMEOUT_MS * 2)
+
+      expect((await pending).body).toMatchObject({ status: 'lost' })
+      expect((await call('get', '/api/device')).body).toMatchObject({ probe: null })
+    })
+
+    it('reports a device that does not announce itself again', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      respondLikeTheDevice()
+      const pending = call('post', '/api/device/reset')
+      await vi.advanceTimersByTimeAsync(RESET_CLAIM_TIMEOUT_MS)
+
+      expect((await pending).body).toMatchObject({ status: 'lost' })
+    })
+
+    it('restores the EEPROM section it names', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      respondLikeTheDevice()
+      const pending = call('post', '/api/device/restore', { body: { option: 'updateRates' } })
+      await flush()
+
+      expect(raw).toHaveLength(1)
+      expect(raw[0].endsWith(eepromResetPayload(EepromResetOption.UpdateRates))).toBe(true)
+
+      claim()
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect((await pending).body).toMatchObject({ status: 'claimed' })
+    })
+
+    it.each([
+      ['the unique number, which the console follows the device by', { option: 'uniqueNumber' }],
+      ['the numeric option', { option: 0 }],
+      ['no option', {}]
+    ])('refuses to restore %s, and sends nothing', async (_name, body) => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const response = await call('post', '/api/device/restore', { body })
+
+      expect(response.status).toBe(400)
+      expect(sent).toHaveLength(0)
+      expect(raw).toHaveLength(0)
+    })
+  })
+
+  describe('simulate mode', () => {
+    let simulating: boolean
+    /** The address the simulated sensor answers from. */
+    let replyFrom: number
+
+    const simulateReply = (): DecodedPgn => ({
+      pgn: PGN.proprietary,
+      src: replyFrom,
+      dst: GATEWAY,
+      fields: {
+        manufacturerCode: 'Airmar',
+        industryCode: 'Marine Industry',
+        proprietaryId: 'Simulate Mode',
+        simulateMode: simulating ? 'On' : 'Off'
+      }
+    })
+    /** Grant the unlock, and answer every other request with the simulate state. */
+    const answerSimulate = () => {
+      app.events.on('nmea2000JsonOut', (message: OutgoingPgn) => {
+        const unlock = Number(message.fields.pgn) === PGN.accessLevel
+        queueMicrotask(() => {
+          deliver(
+            unlock
+              ? acknowledge({ acknowledgedPgn: PGN.accessLevel }, { src: replyFrom, dst: GATEWAY })
+              : simulateReply()
+          )
+        })
+      })
+    }
+    const readSimulate = async () => {
+      const pending = call('get', '/api/settings/:id', { params: { id: 'simulateMode' } })
+      await flush()
+      return pending
+    }
+    const notified = (state: string) => ({
+      updates: [{ values: [{ path: SIMULATE_NOTIFICATION_PATH, value: { state } }] }]
+    })
+
+    beforeEach(() => {
+      replyFrom = DST.address
+      start({ selectedDevice: DST_KEY })
+      heard()
+      answerSimulate()
+    })
+
+    it('raises a notification while the device simulates, and clears it once it stops', async () => {
+      simulating = true
+      await readSimulate()
+
+      expect(app.deltas).toHaveLength(1)
+      expect(app.deltas[0]).toMatchObject(notified('warn'))
+
+      simulating = false
+      await readSimulate()
+      await readSimulate()
+
+      expect(app.deltas).toHaveLength(2)
+      expect(app.deltas[1]).toMatchObject(notified('normal'))
+    })
+
+    it('keeps the warning while the sensor that raised it simulates, whatever another reports', async () => {
+      const second: TreeDevice = { ...DST, address: 30, uniqueNumber: 654321 }
+      simulating = true
+      await readSimulate()
+      app.sources = sourcesTree([DST, second])
+      await call('put', '/api/device', {
+        body: { device: { manufacturerCode: 135, uniqueNumber: second.uniqueNumber } }
+      })
+      deliver(pgnReply(PGN.distanceLog, { src: second.address }))
+      replyFrom = second.address
+      simulating = false
+      await readSimulate()
+
+      expect(app.deltas).toHaveLength(1)
+      expect(app.deltas[0]).toMatchObject(notified('warn'))
+    })
+
+    it('re-reads simulate mode while a console is open, and only then', async () => {
+      simulating = true
+      await vi.advanceTimersByTimeAsync(SIMULATE_REREAD_MS)
+
+      expect(sent).toHaveLength(0)
+
+      const { stream, leave } = openStream()
+      await vi.advanceTimersByTimeAsync(SIMULATE_REREAD_MS)
+
+      expect(named(stream, 'setting').at(-1)?.data).toMatchObject({
+        id: 'simulateMode',
+        operation: 'read',
+        result: { status: 'answered', value: true }
+      })
+      expect(app.deltas).toHaveLength(1)
+      expect(app.deltas[0]).toMatchObject(notified('warn'))
+
+      leave()
+      const before = sent.length
+      await vi.advanceTimersByTimeAsync(SIMULATE_REREAD_MS)
+
+      expect(sent).toHaveLength(before)
+    })
+  })
+
   describe('event stream', () => {
     const OTHER: TreeDevice = {
       address: 30,
@@ -581,16 +848,6 @@ describe('REST API', () => {
       manufacturerCode: 'Airmar',
       modelId: 'DST800'
     }
-
-    /** Open `GET /api/events`; `leave` closes the client side, as a browser tab would. */
-    const openStream = () => {
-      const req = Object.assign(new EventEmitter(), { params: {}, query: {} })
-      const stream = createStreamResponse()
-      void route('get', '/api/events').handler(req, stream.res)
-      return { stream, leave: () => req.emit('close') }
-    }
-    const named = (stream: ReturnType<typeof createStreamResponse>, event: string) =>
-      stream.events().filter((e) => e.event === event)
 
     it('answers 503 before start', () => {
       expect(openStream().stream.status).toBe(503)

@@ -8,9 +8,14 @@
 
 import { DeviceConnection } from './devices/connection.js'
 import { ProbeCache, probe, type ProbeResult } from './devices/probe.js'
-import { DeviceRegistry, sameKey, type Location } from './devices/registry.js'
+import { DeviceRegistry, claimOf, sameKey, type Location } from './devices/registry.js'
+import type { OutgoingRaw } from './protocol/messages.js'
+import { PGN } from './protocol/pids.js'
 import { DeviceSession, type Bus } from './session/deviceSession.js'
-import type { DeviceKey, DeviceResponse, DevicesResponse } from './types.js'
+import type { DeviceKey, DeviceResponse, DevicesResponse, ResetResult } from './types.js'
+
+/** How long a reset device has to claim an address again before the console stops waiting. */
+export const RESET_CLAIM_TIMEOUT_MS = 30_000
 
 export interface RuntimeOptions {
   bus: Bus
@@ -104,6 +109,8 @@ export class ConsoleRuntime {
    *
    * A request while a probe runs on the same session shares that probe. Two
    * probes would alternate in the queue, and each would take twice as long.
+   * A probe that a reset detached is not kept: part of it asked a rebooting
+   * device.
    */
   probe(session: DeviceSession): Promise<ProbeResult> {
     if (this.pending?.session === session) {
@@ -111,7 +118,7 @@ export class ConsoleRuntime {
     }
     const key = this.key
     const result = probe(session).then((found) => {
-      if (key !== null) {
+      if (key !== null && this.pending === pending) {
         this.probes.set(key, found)
         this.changed()
       }
@@ -126,6 +133,61 @@ export class ConsoleRuntime {
     }
     void result.then(clear, clear)
     return result
+  }
+
+  /**
+   * Send a master reset or an EEPROM restore through `session`, and follow the
+   * device through the reboot that follows.
+   *
+   * The device reboots and claims an address again, perhaps another one, which
+   * the registry follows. The cached probe no longer describes it, so it is
+   * dropped, and the device is probed again once it has claimed.
+   */
+  async restart(session: DeviceSession, message: OutgoingRaw): Promise<ResetResult> {
+    const key = this.key
+    if (key === null) {
+      return { status: 'notSent', reason: 'No device is selected' }
+    }
+    const sent = await session.sendRaw(message, { requiresLevel1: true })
+    if (sent.status !== 'answered') {
+      return { status: 'notSent', reason: sent.reason }
+    }
+    this.probes.invalidate(key)
+    // A probe still running asks a rebooting device: detach it, so it is
+    // neither kept nor shared with the probe after the claim.
+    this.pending = null
+    this.changed()
+    const claimed = await this.claimed(key.uniqueNumber)
+    const next = this.session
+    if (!claimed) {
+      return {
+        status: 'lost',
+        reason: `The device did not claim an address within ${String(RESET_CLAIM_TIMEOUT_MS / 1000)} s`
+      }
+    }
+    if (next === null || this.key === null || !sameKey(this.key, key)) {
+      return { status: 'lost', reason: 'The console stopped following the device' }
+    }
+    return { status: 'claimed', probe: await this.probe(next) }
+  }
+
+  /** Resolves true on the next Address Claim from `uniqueNumber`, false after the timeout. */
+  private claimed(uniqueNumber: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const finish = (claimed: boolean): void => {
+        clearTimeout(timer)
+        unsubscribe()
+        resolve(claimed)
+      }
+      const timer = setTimeout(() => {
+        finish(false)
+      }, RESET_CLAIM_TIMEOUT_MS)
+      const unsubscribe = this.bus.subscribe((pgn) => {
+        if (pgn.pgn === PGN.addressClaim && claimOf(pgn)?.uniqueNumber === uniqueNumber) {
+          finish(true)
+        }
+      })
+    })
   }
 
   /** Body of `GET /api/devices`. */
