@@ -25,13 +25,14 @@ import {
 import type { DecodedPgn, OutgoingPgn } from '../protocol/messages.js'
 import {
   AirmarPid,
+  CURVE_FIRST_PAIR_PARAM,
   CURVE_HZ_RESOLUTION,
   CURVE_SPEED_RESOLUTION,
   MAX_CURVE_POINTS,
   PGN,
   pidFromName
 } from '../protocol/pids.js'
-import type { ReadSpec } from '../session/deviceSession.js'
+import type { CommandSpec, ReadSpec } from '../session/deviceSession.js'
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -54,7 +55,7 @@ export interface Setting<Stored, Written> {
   requirement: string
   /** What the probe must find for this capability to be offered; null when it is not probed. */
   capability: Capability | null
-  /** Applies to the read as well as the command: `buildRead` adds it to the request. */
+  /** Applies to the read as well as the command: `buildRead` and `buildCommand` add it. */
   requiresLevel1: boolean
   /** False when the device's value cannot be read back, and `read` returns null. */
   readable: boolean
@@ -70,6 +71,11 @@ export interface Setting<Stored, Written> {
   command(address: number, value: Written, qualifier?: number): OutgoingPgn | null
   /** Whether the device stored what was asked for, at the device's own resolution. */
   sameAsStored(requested: Written, stored: Stored): boolean
+  /**
+   * The user's name for a field of the commanded PGN, so a refusal can say
+   * which one the device refused. Null for a field the entry does not write.
+   */
+  fieldName(parameter: number): string | null
 }
 
 /**
@@ -205,11 +211,18 @@ function onOffSetting(options: {
     parse: (input) => booleanInput(input, options.id),
     command: (address, value) =>
       commandProprietary(address, pid, [{ parameter: 5, value: value ? 1 : 0 }]),
-    sameAsStored: (requested, stored) => requested === stored
+    sameAsStored: (requested, stored) => requested === stored,
+    fieldName: (parameter) => (parameter === 5 ? options.id : null)
   }
 }
 
 /* ----------------------------------------------------------------- filters */
+
+const FILTER_FIELDS: Partial<Record<number, string>> = {
+  5: 'type',
+  7: 'sampleInterval',
+  8: 'filterDuration'
+}
 
 /** Sample interval and filter duration: uint16 at 0.01 s, with 0 reserved. */
 const FILTER_TIME_RESOLUTION = 0.01
@@ -289,7 +302,8 @@ function filterSetting(
           ? []
           : [{ parameter: 8, value: value.filterDuration }])
       ]),
-    sameAsStored: () => false
+    sameAsStored: () => false,
+    fieldName: (parameter) => FILTER_FIELDS[parameter] ?? null
   }
 }
 
@@ -368,7 +382,19 @@ const speedCurve: Setting<CurvePoint[], CurvePoint[]> = {
       (point, i) =>
         sameAt(CURVE_HZ_RESOLUTION, point.hz, stored[i].hz) &&
         sameAt(CURVE_SPEED_RESOLUTION, point.speed, stored[i].speed)
-    )
+    ),
+  // Field 5 is the point count, then each point is a frequency and speed pair.
+  fieldName: (parameter) => {
+    if (parameter === 5) {
+      return 'point count'
+    }
+    if (parameter < CURVE_FIRST_PAIR_PARAM) {
+      return null
+    }
+    const offset = parameter - CURVE_FIRST_PAIR_PARAM
+    const point = Math.floor(offset / 2) + 1
+    return `point ${String(point)} ${offset % 2 === 0 ? 'hz' : 'speed'}`
+  }
 }
 
 const temperatureOffset: Setting<number, number> = {
@@ -406,7 +432,8 @@ const temperatureOffset: Setting<number, number> = {
       { parameter: 7, value }
     ])
   },
-  sameAsStored: (requested, stored) => sameAt(TEMPERATURE_OFFSET_RESOLUTION, requested, stored)
+  sameAsStored: (requested, stored) => sameAt(TEMPERATURE_OFFSET_RESOLUTION, requested, stored),
+  fieldName: (parameter) => (parameter === 5 ? 'source' : parameter === 7 ? 'value' : null)
 }
 
 const depthOffset: Setting<number, number> = {
@@ -426,7 +453,8 @@ const depthOffset: Setting<number, number> = {
   parse: (input) => numberIn(input, -MAX_DEPTH_OFFSET, MAX_DEPTH_OFFSET, 'Depth offset'),
   command: (address, value) =>
     commandStandardField(address, PGN.waterDepth, [{ parameter: 3, value }]),
-  sameAsStored: (requested, stored) => sameAt(DEPTH_OFFSET_RESOLUTION, requested, stored)
+  sameAsStored: (requested, stored) => sameAt(DEPTH_OFFSET_RESOLUTION, requested, stored),
+  fieldName: (parameter) => (parameter === 3 ? 'value' : null)
 }
 
 const speedOfSound: Setting<number, number> = {
@@ -446,7 +474,8 @@ const speedOfSound: Setting<number, number> = {
   parse: (input) => numberIn(input, MIN_SPEED_OF_SOUND, MAX_SPEED_OF_SOUND, 'Speed of sound'),
   command: (address, value) =>
     commandProprietary(address, AirmarPid.CalibrateDepth, [{ parameter: 5, value }]),
-  sameAsStored: (requested, stored) => sameAt(SPEED_OF_SOUND_RESOLUTION, requested, stored)
+  sameAsStored: (requested, stored) => sameAt(SPEED_OF_SOUND_RESOLUTION, requested, stored),
+  fieldName: (parameter) => (parameter === 5 ? 'value' : null)
 }
 
 const installationDescription: Setting<InstallationDescription, InstallationDescription> = {
@@ -503,7 +532,9 @@ const installationDescription: Setting<InstallationDescription, InstallationDesc
     ]),
   sameAsStored: (requested, stored) =>
     (requested.description1 === undefined || requested.description1 === stored.description1) &&
-    (requested.description2 === undefined || requested.description2 === stored.description2)
+    (requested.description2 === undefined || requested.description2 === stored.description2),
+  fieldName: (parameter) =>
+    parameter === 1 ? 'description1' : parameter === 2 ? 'description2' : null
 }
 
 const productInformation: Setting<ProductInformation, never> = {
@@ -531,7 +562,8 @@ const productInformation: Setting<ProductInformation, never> = {
   }),
   parse: () => fail('Product information is read-only'),
   command: () => null,
-  sameAsStored: () => false
+  sameAsStored: () => false,
+  fieldName: () => null
 }
 
 const distanceLog: Setting<DistanceLog, { tripLog: number }> = {
@@ -566,7 +598,8 @@ const distanceLog: Setting<DistanceLog, { tripLog: number }> = {
     const ran =
       stepOf(TRIP_LOG_RESOLUTION, stored.tripLog) - stepOf(TRIP_LOG_RESOLUTION, requested.tripLog)
     return ran >= 0 && ran <= MAX_TRIP_LOG_DRIFT
-  }
+  },
+  fieldName: (parameter) => (parameter === 4 ? 'tripLog' : null)
 }
 
 const SETTING_TABLE = {
@@ -643,7 +676,7 @@ export function buildCommand(
   address: number,
   input: unknown,
   qualifier?: number
-): ParseResult<{ message: OutgoingPgn; value: unknown }> {
+): ParseResult<{ spec: CommandSpec; value: unknown }> {
   const entry: AnySetting = setting(id)
   const qualified = checkQualifier(entry, qualifier)
   if (!qualified.ok) {
@@ -654,7 +687,9 @@ export function buildCommand(
     return parsed
   }
   const message = entry.command(address, parsed.value, qualifier)
-  return message === null ? fail(`${id} is read-only`) : ok({ message, value: parsed.value })
+  return message === null
+    ? fail(`${id} is read-only`)
+    : ok({ spec: { message, requiresLevel1: entry.requiresLevel1 }, value: parsed.value })
 }
 
 /** The request for a setting, or an error saying why it cannot be read. */

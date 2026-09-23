@@ -974,6 +974,59 @@ describe('DeviceSession', () => {
     })
   })
 
+  describe('a command and its read-back', () => {
+    const depthCommand = (offset: number): CommandSpec => ({
+      message: commandStandardField(DEVICE, PGN.waterDepth, [{ parameter: 3, value: offset }])
+    })
+
+    it('runs the read-back in the command’s queue slot, before anything queued behind it', async () => {
+      const first = session.commandThenRead(depthCommand(0.35), () => readCurve())
+      const second = session.command(depthCommand(0.5))
+      await flush()
+      bus.deliver(acknowledge({ acknowledgedPgn: PGN.waterDepth }, fromDevice()))
+      await flush()
+
+      expect(bus.targets()).toEqual([PGN.waterDepth, PGN.proprietary])
+
+      bus.deliver(curveReply(CURVE, fromDevice()))
+      await flush()
+
+      expect(bus.targets()).toEqual([PGN.waterDepth, PGN.proprietary, PGN.waterDepth])
+      expect(await first).toEqual({
+        command: { status: 'answered', value: undefined },
+        read: { status: 'answered', value: [CURVE] }
+      })
+
+      bus.deliver(acknowledge({ acknowledgedPgn: PGN.waterDepth }, fromDevice()))
+      await second
+    })
+
+    it('lets the caller skip the read-back from the command’s outcome', async () => {
+      const pending = session.commandThenRead(depthCommand(0.35), (outcome) =>
+        outcome.status === 'answered' ? readCurve() : null
+      )
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect(await pending).toEqual({
+        command: { status: 'unknown', reason: 'The device did not answer' },
+        read: null
+      })
+      expect(bus.sent).toHaveLength(1)
+    })
+
+    it('reports a full backlog as the command’s refusal, with no read', async () => {
+      for (let i = 0; i < MAX_QUEUE_DEPTH + 1; i += 1) {
+        void session.command(depthCommand(i))
+      }
+      const outcome = await session.commandThenRead(depthCommand(0.35), () => readCurve())
+
+      expect(outcome).toEqual({
+        command: { status: 'rejected', reason: 'The device has a backlog of unanswered requests' },
+        read: null
+      })
+    })
+  })
+
   describe('shutdown and backpressure', () => {
     it('stops listening and fails queued work when closed', async () => {
       const first = session.read(readCurve())

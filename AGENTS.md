@@ -139,6 +139,12 @@ Airmar's proprietary PGNs (65287, 65408–65410, 130944) answer only a 126208 Re
 
 Every lookup in a reply is read as canboat's name or as its raw number, for the same reason as the acknowledgement codes: a provider can turn name resolution off.
 
+**Every write follows one contract** (`src/settings/operations.ts`): send the command, wait for the Acknowledge, then read the value back once. The Acknowledge is the only commit signal the protocol has, and the read-back is what the console shows as the truth. A stored value that differs beyond resolution is `storedDiffers`, not a failure: the device's value is what the device will use. A refusal from the device is read back too, because the manual does not say whether a curve with one bad point is stored in part. A timeout is not read back; it says nothing about whether the frame arrived. Nor is an access denial: it stores nothing, and the read-back would need the unlock the device has just refused, spending the second refusal that marks Level 1 unavailable.
+
+**The command and its read-back run in one queue slot** (`DeviceSession.commandThenRead`). As two queue entries, a second write to the same setting would land between them, and the first would report the second's value as stored.
+
+A refusal counts as the device's only when its acknowledgement names the command's own PGN. The session also reports a refused unlock, which carries the 65287 acknowledgement, and a full queue, which carries none; in both the command never went out, and the result is `notSent`. A device refusal names the refused fields in the user's terms through each entry's `fieldName`, because the acknowledgement's indices count positions in the 126208 list, which starts with the identity fields.
+
 **The speed and temperature filters are write-only.** Their commands encode and the device acknowledges them, but canboatjs 3.20.0 cannot decode a 126720-43 or -44 reply, and the server runs that version, so the stored value never reaches the plugin (issue 22). Their `read` returns null. The device stores the parameters per filter type, so a write may carry the type alone to switch filters without overwriting parameters the plugin cannot read. Do not add a decoder that reads `canboatjs:unparsed:data`: its chunk format depends on the provider, and it also carries every intermediate fast-packet frame.
 
 The depth offset is field 3 of the standard PGN 128267, not PID 40. PID 40 is the speed of sound. The manual's "distance since last reset" is canboat's `tripLog` in PGN 128275.

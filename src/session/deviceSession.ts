@@ -368,6 +368,32 @@ export class DeviceSession {
   }
 
   /**
+   * Send a command and then, if `readAfter` asks for one, a read, in one queue
+   * slot.
+   *
+   * Nothing queued behind the command can run between the two. As separate
+   * operations, a second write to the same setting would land between the
+   * first write and its read-back, and the first would report the second's
+   * value as what the device stored. `readAfter` sees the command's outcome
+   * and returns null to skip the read.
+   */
+  commandThenRead<T>(
+    command: CommandSpec,
+    readAfter: (outcome: Outcome<void>) => ReadSpec<T> | null
+  ): Promise<{ command: Outcome<void>; read: Outcome<T[]> | null }> {
+    return this.enqueueTask(
+      async () => {
+        const sent = await this.run(command)
+        const outcome: Outcome<void> =
+          sent.status === 'answered' ? { status: 'answered', value: undefined } : sent
+        const spec = readAfter(outcome)
+        return { command: outcome, read: spec === null ? null : await this.run(spec) }
+      },
+      (outcome) => ({ command: outcome, read: null })
+    )
+  }
+
+  /**
    * Raise the access level now, with no operation to protect.
    *
    * For a caller that needs the grant held before a sequence of reads, such
@@ -400,16 +426,28 @@ export class DeviceSession {
   }
 
   private enqueue<T>(task: () => Promise<Outcome<T[]>>): Promise<Outcome<T[]>> {
+    return this.enqueueTask(task, (outcome) => outcome)
+  }
+
+  /**
+   * Queue one task, whatever it returns.
+   *
+   * `refused` turns the session's own refusal into the task's result type:
+   * the queue was full, or the task threw.
+   */
+  private enqueueTask<R>(
+    task: () => Promise<R>,
+    refused: (outcome: Outcome<never>) => R
+  ): Promise<R> {
     if (this.queue.length >= MAX_QUEUE_DEPTH) {
       // Rejected, not unknown: the session knows this frame never reached the
       // bus, and a console that cannot tell that from a lost write will
       // encourage the user to write EEPROM again.
-      return Promise.resolve({
-        status: 'rejected',
-        reason: 'The device has a backlog of unanswered requests'
-      })
+      return Promise.resolve(
+        refused({ status: 'rejected', reason: 'The device has a backlog of unanswered requests' })
+      )
     }
-    return new Promise<Outcome<T[]>>((resolve) => {
+    return new Promise<R>((resolve) => {
       this.queue.push(async () => {
         try {
           resolve(await task())
@@ -418,7 +456,9 @@ export class DeviceSession {
           // and `onError` belongs to the host: a logger that throws during
           // shutdown would otherwise leave the promise pending for ever and
           // raise an unhandled rejection out of the drain.
-          resolve({ status: 'unknown', reason: 'The operation failed before it was answered' })
+          resolve(
+            refused({ status: 'unknown', reason: 'The operation failed before it was answered' })
+          )
           this.report(error)
         }
       })
