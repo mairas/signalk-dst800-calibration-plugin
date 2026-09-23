@@ -16,7 +16,9 @@ import {
   decodeAcknowledge,
   decodeSpeedCurve,
   masterReset,
+  requestAirmarPgn,
   requestSpeedCurve,
+  requestStandardPgn,
   resetEeprom,
   restoreDefaultSpeedCurve,
   setSpeedCurve,
@@ -394,5 +396,28 @@ describe('decoding an acknowledgement', () => {
     ['an unrelated PGN', { pgn: 65409, fields: {} }]
   ])('ignores %s', (_name, message) => {
     expect(decodeAcknowledge(message as DecodedPgn)).toBeNull()
+  })
+})
+
+describe('requesting a whole PGN', () => {
+  it('names the manufacturer and industry when requesting an Airmar proprietary PGN', () => {
+    // The manual: "Fields 1 and 3 must both be fully specified in the request
+    // in order for this PGN to be transmitted." None answers an ISO Request.
+    expect(payload(requestAirmarPgn(DST, 65409))).toBe(
+      '00,81,ff,00,ff,ff,ff,ff,ff,ff,02,01,87,00,03,04'
+    )
+  })
+
+  it('requests a standard PGN with no qualifiers', () => {
+    expect(payload(requestStandardPgn(DST, 126996))).toBe('00,14,f0,01,ff,ff,ff,ff,ff,ff,00')
+  })
+
+  it.each([
+    ['proprietary', () => requestAirmarPgn(DST, 130944)],
+    ['standard', () => requestStandardPgn(DST, 128275)]
+  ])('addresses a %s request to the device', (_name, build) => {
+    const decoded = decode(build())
+    expect(build()).toMatchObject({ dst: DST, pgn: 126208 })
+    expect(decoded.fields?.functionCode).toBe('Request')
   })
 })
