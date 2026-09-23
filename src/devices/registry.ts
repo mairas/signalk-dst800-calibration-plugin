@@ -21,7 +21,7 @@
 
 import type { DecodedPgn } from '../protocol/messages.js'
 import { PGN } from '../protocol/pids.js'
-import type { DeviceKey } from '../types.js'
+import { MANUFACTURER_CODE_BITS, UNIQUE_NUMBER_BITS, type DeviceKey } from '../types.js'
 
 /**
  * How long a device stays present after its last frame.
@@ -43,10 +43,9 @@ const SWEEP_MS = 1000
 /** Unicast addresses only: 254 is "cannot claim" and 255 is global. */
 const MAX_UNICAST_ADDRESS = 253
 
-const UNIQUE_NUMBER_BITS = 21n
-const UNIQUE_NUMBER_MASK = (1n << UNIQUE_NUMBER_BITS) - 1n
-const MANUFACTURER_BITS = 11n
-const MANUFACTURER_MASK = (1n << MANUFACTURER_BITS) - 1n
+const UNIQUE_NUMBER_SHIFT = BigInt(UNIQUE_NUMBER_BITS)
+const UNIQUE_NUMBER_MASK = (1n << UNIQUE_NUMBER_SHIFT) - 1n
+const MANUFACTURER_MASK = (1n << BigInt(MANUFACTURER_CODE_BITS)) - 1n
 const CAN_NAME = /^[0-9a-f]{1,16}$/i
 
 /** A device as the console offers it for selection. */
@@ -109,7 +108,7 @@ export function parseCanName(canName: string): DeviceKey | null {
   const name = BigInt(`0x${canName}`)
   return {
     uniqueNumber: Number(name & UNIQUE_NUMBER_MASK),
-    manufacturerCode: Number((name >> UNIQUE_NUMBER_BITS) & MANUFACTURER_MASK)
+    manufacturerCode: Number((name >> UNIQUE_NUMBER_SHIFT) & MANUFACTURER_MASK)
   }
 }
 
@@ -119,7 +118,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const text = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 ? value : null
 
-const sameKey = (a: DeviceKey, b: DeviceKey): boolean =>
+export const sameKey = (a: DeviceKey, b: DeviceKey): boolean =>
   a.manufacturerCode === b.manufacturerCode && a.uniqueNumber === b.uniqueNumber
 
 /** Distinguishes a manufacturer rendered as the string '135' from the code 135. */

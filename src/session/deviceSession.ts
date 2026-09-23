@@ -54,7 +54,7 @@ const TIMEOUTS_BEFORE_FORGETTING_GATEWAY = 2
  * than repeating the same failure. The cap stops a device that answers once an
  * hour from making every control feel broken.
  */
-const MAX_ADAPTIVE_TIMEOUT_MS = 8000
+export const MAX_ADAPTIVE_TIMEOUT_MS = 8000
 
 const GLOBAL_ADDRESS = 255
 

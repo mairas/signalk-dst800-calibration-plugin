@@ -157,9 +157,15 @@ This matters for test fixtures, because the multi-reply tests use PGN 126464, wh
 
 ## HTTP routes
 
-Read routes are registered through `router.access('readonly')` so a non-admin login can use the console. A route registered with a plain `router.get` records no permission, and the server falls through to admin-only.
+Routes that answer from what the plugin already holds (health, the device list, the selection, the settings list) are registered through `router.access('readonly')` so a non-admin login can watch the console. A route registered with a plain `router.get` records no permission, and the server falls through to admin-only.
 
-Routes that write to a sensor keep that admin default. Do not widen them: later units add routes that wipe EEPROM, reboot the sensor and put simulated depth on the bus for every autopilot and anchor alarm on the vessel.
+Every route that puts a frame on the bus keeps that admin default, reading a setting included: a read of a Level 1 setting sends the unlock, and a refused unlock counts toward the two that make Level 1 unavailable for 15 minutes. Do not widen them: later units add routes that wipe EEPROM, reboot the sensor and put simulated depth on the bus for every autopilot and anchor alarm on the vessel.
+
+A device outcome is a 200 with the outcome in the body, a refusal and a timeout included, because the console shows the device's reason. Error statuses are only for a request the plugin cannot act on: 400 for input refused before the bus, 404 for an unknown setting, 409 when no device is selected, 503 while the plugin is stopped or the device has not been heard, and 500 when the selection cannot be saved.
+
+The routes are registered once at plugin load, before and independently of `start()`, so they reach the `ConsoleRuntime` (`src/runtime.ts`) through a getter. `start()` builds the runtime and `stop()` closes it, removing every bus listener. The selection is saved with `savePluginOptions`, merged into the stored configuration, and does not restart the plugin. Selecting the device already selected keeps its session.
+
+The OpenAPI document is `src/api/openApi.ts`. A test fails when a registered route is missing from it, when a list, selection or probe body's fields differ from its schema, or when a setting's read or write body carries a field its schema does not list. The status enums are checked against the result types at compile time. The response types live in `src/types.ts` beside `HealthResponse`, for the webapp to share.
 
 ## This repository is public
 
