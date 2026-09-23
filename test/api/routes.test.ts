@@ -11,7 +11,7 @@ import {
   type RecordedRoute
 } from '../helpers/MockServerAPI.js'
 import { decode } from '../helpers/canboat.js'
-import { acknowledge, addressClaim, pgnReply, pidReply } from '../helpers/replies.js'
+import { acknowledge, addressClaim, pgnListReply, pgnReply, pidReply } from '../helpers/replies.js'
 import { sourcesTree, type TreeDevice } from '../helpers/sources.js'
 import { PROBED, capabilityId } from '../../src/devices/probe.js'
 import type { DecodedPgn, OutgoingPgn } from '../../src/protocol/messages.js'
@@ -24,6 +24,7 @@ import {
   eepromResetPayload
 } from '../../src/protocol/pids.js'
 import { RESET_CLAIM_TIMEOUT_MS } from '../../src/runtime.js'
+import { DEFAULT_TIMEOUT_MS } from '../../src/session/deviceSession.js'
 import { SIMULATE_NOTIFICATION_PATH, SIMULATE_REREAD_MS } from '../../src/simulate.js'
 import { buildCommand, buildRead } from '../../src/settings/registry.js'
 import type { DeviceKey } from '../../src/types.js'
@@ -191,6 +192,8 @@ describe('REST API', () => {
         'post /api/device/probe': 'admin',
         'post /api/device/reset': 'admin',
         'post /api/device/restore': 'admin',
+        'get /api/pgns': 'admin',
+        'put /api/pgns/:pgn': 'admin',
         'get /api/settings': 'readonly',
         'get /api/settings/:id': 'admin',
         'put /api/settings/:id': 'admin',
@@ -204,7 +207,7 @@ describe('REST API', () => {
       )
       const registered = routes
         .filter((r) => r.path !== '/api/health')
-        .map((r) => `${r.method} ${r.path.replace(':id', '{id}')}`)
+        .map((r) => `${r.method} ${r.path.replace(':id', '{id}').replace(':pgn', '{pgn}')}`)
 
       expect(documented.sort()).toEqual(registered.sort())
     })
@@ -592,6 +595,86 @@ describe('REST API', () => {
 
       expect((await first).body).toEqual((await second).body)
       expect(sent).toHaveLength(PROBED.length + 1)
+    })
+  })
+
+  describe('PGN intervals and priorities', () => {
+    it('lists what the device transmits, in the documented shape', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const pending = call('get', '/api/pgns')
+      await flush()
+      deliver(pgnListReply('Transmit PGN list', [PGN.waterDepth], from))
+      const response = await pending
+
+      expect(response.body).toEqual({
+        status: 'answered',
+        pgns: [{ pgn: PGN.waterDepth, minIntervalMs: 50, telemetry: false }]
+      })
+      expect(propertiesOf(documented('/api/pgns', 'get'))).toEqual(
+        expect.arrayContaining(keys(response.body))
+      )
+    })
+
+    it('sets a priority and reports the device’s acknowledgement', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const pending = call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.speed) },
+        body: { priority: 2 }
+      })
+      await flush()
+      deliver(acknowledge({ acknowledgedPgn: PGN.speed }, from))
+
+      expect((await pending).body).toEqual({ status: 'applied' })
+    })
+
+    it('sets an interval, times the PGN on the bus, and answers in the documented shape', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const pending = call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.waterDepth) },
+        body: { intervalMs: 500 }
+      })
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      for (let i = 0; i < 3; i += 1) {
+        deliver(depthReply(0.35))
+        await vi.advanceTimersByTimeAsync(500)
+      }
+      const response = await pending
+
+      expect(response.body).toEqual({ status: 'applied', observedIntervalMs: 500 })
+      expect(propertiesOf(documented('/api/pgns/{pgn}', 'put'))).toEqual(
+        expect.arrayContaining(keys(response.body))
+      )
+    })
+
+    it('refuses a PGN wider than the 126208 field, which would wrap onto another', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const response = await call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.speed + 2 ** 24) },
+        body: { priority: 2 }
+      })
+
+      expect(response.status).toBe(400)
+      expect(sent).toHaveLength(0)
+    })
+
+    it.each([
+      ['both an interval and a priority', { intervalMs: 500, priority: 2 }],
+      ['neither', {}],
+      ['an interval out of range', { intervalMs: 10 }]
+    ])('refuses %s with 400 and sends nothing', async (_name, body) => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const response = await call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.waterDepth) },
+        body
+      })
+
+      expect(response.status).toBe(400)
+      expect(sent).toHaveLength(0)
     })
   })
 

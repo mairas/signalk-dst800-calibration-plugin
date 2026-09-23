@@ -12,6 +12,7 @@ import { DeviceRegistry, claimOf, sameKey, type Location } from './devices/regis
 import type { OutgoingRaw } from './protocol/messages.js'
 import { PGN } from './protocol/pids.js'
 import { DeviceSession, type Bus } from './session/deviceSession.js'
+import type { PgnContext } from './settings/pgnIntervals.js'
 import type { DeviceKey, DeviceResponse, DevicesResponse, ResetResult } from './types.js'
 
 /** How long a reset device has to claim an address again before the console stops waiting. */
@@ -188,6 +189,11 @@ export class ConsoleRuntime {
         }
       })
     })
+  }
+
+  /** What an interval write needs: the session, and the bus to time the frames on. */
+  pgnContext(session: DeviceSession): PgnContext {
+    return { session, subscribe: (handler) => this.bus.subscribe(handler), now: this.now }
   }
 
   /** Body of `GET /api/devices`. */
