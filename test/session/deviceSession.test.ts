@@ -1028,14 +1028,14 @@ describe('DeviceSession', () => {
   })
 
   describe('shutdown and backpressure', () => {
-    it('stops listening and fails queued work when closed', async () => {
+    it('stops listening, and refuses queued work it never sent, when closed', async () => {
       const first = session.read(readCurve())
       const second = session.read(readPgnLists())
       await flush()
       session.close()
 
       expect((await first).status).toBe('unknown')
-      expect((await second).status).toBe('unknown')
+      expect(await second).toEqual({ status: 'rejected', reason: 'The session was closed' })
       expect(bus.sent).toHaveLength(1)
 
       bus.deliver(curveReply(CURVE, fromDevice()))
@@ -1052,17 +1052,17 @@ describe('DeviceSession', () => {
 
       expect(session.closedReason).toBe('The device moved to address 30')
       expect(await first).toEqual({ status: 'unknown', reason: 'The device moved to address 30' })
-      expect(await second).toEqual({ status: 'unknown', reason: 'The device moved to address 30' })
+      expect(await second).toEqual({ status: 'rejected', reason: 'The device moved to address 30' })
     })
 
-    it('sends nothing more when closed between two attempts of a retry', async () => {
+    it('sends nothing more when closed between two attempts of a retry, and says so', async () => {
       const pending = session.read(readCurve())
       await flush()
       bus.deliver(acknowledge({ parameterErrors: ['Temporary error'] }, fromDevice()))
       session.close()
       await flush()
 
-      expect((await pending).status).toBe('unknown')
+      expect(await pending).toEqual({ status: 'rejected', reason: 'The session was closed' })
       expect(bus.sent).toHaveLength(1)
     })
 

@@ -97,7 +97,7 @@ Duplicate replies are recognised by the frame's own fields, not by what a decode
 
 Nothing the host supplies may take the process down: `onObservation` and `onError` both run inside `try`, `onError` is never called outside one, and the drain's promise carries a `catch`. A logger that throws during shutdown would otherwise leave a caller's promise pending for ever and raise an unhandled rejection.
 
-A full queue is `rejected`, not `unknown`. The session knows that frame never reached the bus, and a console that cannot tell a refused slot from a lost write will invite the user to write EEPROM again.
+A full queue is `rejected`, not `unknown`. The session knows that frame never reached the bus, and a console that cannot tell a refused slot from a lost write will invite the user to write EEPROM again. For the same reason a frame the session has not sent by `close()` is `rejected`, whether its task was still queued, waiting for the unlock it needs, or waiting out a mute before a retry. The request in flight when the session closes stays `unknown`, because its frame did go out.
 
 Parameter error `Temporary error` and access denied each get exactly one retry, the latter after re-unlocking. Everything else surfaces as the device sent it, with the decoded acknowledgement attached — its 1-based parameter indices are the only way to say which field of a multi-parameter write was refused.
 
