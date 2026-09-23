@@ -65,8 +65,58 @@ export const MAX_CURVE_HZ = 6553.2
 /** PGN 126720-41 field 7: uint16 at 0.01 m/s. */
 export const MAX_CURVE_SPEED = 655.32
 
-/** canboatjs resolves the proprietary ID lookup to this name in a reply. */
-export const CALIBRATE_SPEED_NAME = 'Calibrate Speed'
+/**
+ * The display strings canboatjs reports in a reply's `proprietaryId` field.
+ *
+ * canboatjs resolves the lookup to a string, so a reply cannot be matched
+ * against the numeric PID that requested it without this table. Master reset
+ * and EEPROM restore are absent from the canboat lookup and stay absent here;
+ * neither is acknowledged, so neither is ever matched against a reply.
+ */
+const PID_NAMES = {
+  [AirmarPid.SimulateMode]: 'Simulate Mode',
+  [AirmarPid.CalibrateDepth]: 'Calibrate Depth',
+  [AirmarPid.CalibrateSpeed]: 'Calibrate Speed',
+  [AirmarPid.CalibrateTemperature]: 'Calibrate Temperature',
+  [AirmarPid.SpeedFilter]: 'Speed Filter',
+  [AirmarPid.TemperatureFilter]: 'Temperature Filter',
+  [AirmarPid.Nmea2000Options]: 'NMEA 2000 options'
+} as const
+
+const NAME_BY_PID: Record<number, string | undefined> = PID_NAMES
+
+/** The string canboatjs reports for this PID, or null when it reports none. */
+export function pidName(pid: AirmarPid): string | null {
+  return NAME_BY_PID[pid] ?? null
+}
+
+/**
+ * Read a reply's proprietary ID field back into a PID.
+ *
+ * The field arrives as a string when canboatjs can name the value and as a
+ * number when it cannot, so both are accepted. Anything else — including a
+ * number that names no PID of this plugin's — is null rather than a guess.
+ */
+export function pidFromName(value: unknown): AirmarPid | null {
+  if (typeof value === 'string') {
+    const found = Object.entries(NAME_BY_PID).find(([, name]) => name === value)
+    return found === undefined ? null : Number(found[0])
+  }
+  if (typeof value === 'number' && Number.isInteger(value) && value in AirmarPid) {
+    return value
+  }
+  return null
+}
+
+/**
+ * canboatjs resolves the proprietary ID lookup to this name in a reply.
+ *
+ * Read straight out of the table rather than through `pidName`, so it is
+ * typed as the literal string. A nullable here with an empty-string default
+ * would turn a lost table entry into a decoder that silently matches no real
+ * reply, which is the one failure this constant must not have.
+ */
+export const CALIBRATE_SPEED_NAME = PID_NAMES[AirmarPid.CalibrateSpeed]
 
 /** Field 5 of PGN 126720-41: restore the factory default curve. */
 export const RESTORE_DEFAULT_CURVE = 0xfe

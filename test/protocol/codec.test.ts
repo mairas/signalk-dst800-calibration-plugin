@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from 'vitest'
-import { pgnToActisenseSerialFormat, FromPgn } from '@canboat/canboatjs'
-import type { PGN } from '@canboat/ts-pgns'
-import type { DecodedPgn, OutgoingPgn } from '../../src/protocol/messages.js'
+import { describe, it, expect } from 'vitest'
+import { decode, payload } from '../helpers/canboat.js'
+import { curveReply } from '../helpers/replies.js'
+import type { DecodedPgn } from '../../src/protocol/messages.js'
 import { CALIBRATE_SPEED_NAME } from '../../src/protocol/pids.js'
 import type { CurvePoint } from '../../src/protocol/codec.js'
 import {
@@ -24,27 +24,6 @@ import {
 } from '../../src/protocol/codec.js'
 
 const DST = 35
-
-/**
- * canboatjs types its encoder against an abstract PGN class, while both this
- * codec and the server's own code pass plain object literals. One cast, here.
- */
-const encode = (message: OutgoingPgn) => pgnToActisenseSerialFormat(message as unknown as PGN)
-
-/** The Actisense line minus its prefix: timestamp, prio, pgn, src, dst, len. */
-const payload = (message: OutgoingPgn) => encode(message).split(',').slice(6).join(',')
-
-/**
- * canboatjs cannot reassemble a single-line fast packet as a parser's very
- * first input, so prime it once. Without this the suite is order-dependent:
- * a `-t` filter that runs a 126720 case first sees a spurious failure.
- */
-const parser = new FromPgn()
-beforeAll(() => {
-  parser.parseString(encode(requestSpeedCurve(DST)))
-})
-const decode = (message: OutgoingPgn) =>
-  parser.parseString(encode(message)) as unknown as DecodedPgn
 
 describe('addressing', () => {
   it.each([
@@ -237,29 +216,8 @@ describe('eeprom reset validation', () => {
 })
 
 describe('decoding a curve reply', () => {
-  /**
-   * A real device reply, built by encoding a 126720 and parsing it back.
-   *
-   * Hand-writing the fixture is what hid the original defect: the decoder read
-   * `numberOfPairsOfDataPointsToFollow`, which canboatjs never emits, and the
-   * fixture invented the same name — so the test asserted the code against
-   * itself while the trim never ran.
-   */
-  const realReply = (points: CurvePoint[], declared = points.length): DecodedPgn => {
-    const line = pgnToActisenseSerialFormat({
-      pgn: 126720,
-      dst: 255,
-      prio: 7,
-      fields: {
-        manufacturerCode: 'Airmar',
-        industryCode: 'Marine Industry',
-        proprietaryId: CALIBRATE_SPEED_NAME,
-        numberOfPairsOfDataPoints: declared,
-        list: points.map((point) => ({ inputFrequency: point.hz, outputSpeed: point.speed }))
-      }
-    } as unknown as PGN)
-    return parser.parseString(line) as unknown as DecodedPgn
-  }
+  const realReply = (points: CurvePoint[], declared = points.length): DecodedPgn =>
+    curveReply(points, {}, declared)
 
   it('reads the points the device reports', () => {
     const reply = realReply([
