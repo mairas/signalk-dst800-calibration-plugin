@@ -273,6 +273,20 @@ export const openApi = {
         }
       }
     },
+    '/api/events': {
+      get: {
+        summary: 'Server-Sent Events for every open console',
+        description:
+          'Starts with `devices` and `device`. Then `devices` when the device list changes, `device` when the selection, the selected device’s location or its cached probe changes (each carries the same body as the matching GET), and `setting` after each read or write of a setting that reached the session, carrying `{ id, qualifier, operation, result }`. A comment line every 25 s keeps idle proxies from closing the stream. The stream ends when the plugin stops.',
+        responses: {
+          '200': {
+            description: 'An event stream',
+            content: { 'text/event-stream': { schema: { type: 'string' } } }
+          },
+          '503': notRunning
+        }
+      }
+    },
     '/api/settings/{id}': {
       get: {
         summary: 'Read a setting from the device',

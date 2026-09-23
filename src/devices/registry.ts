@@ -358,7 +358,7 @@ export class DeviceRegistry {
   }
 
   private currentSignature(): string {
-    return JSON.stringify(this.candidates().map((c) => [c.key, c.location]))
+    return JSON.stringify(this.candidates())
   }
 
   private publishIfChanged(): void {

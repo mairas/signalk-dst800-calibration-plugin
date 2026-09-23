@@ -22,21 +22,17 @@ import type { PluginRouter } from '@signalk/server-api'
 import type { CapabilityState } from '../devices/probe.js'
 import { capabilityId } from '../devices/probe.js'
 import type { ConsoleRuntime } from '../runtime.js'
+import type { EventStream } from './events.js'
 import { readSetting, writeSetting } from '../settings/operations.js'
 import { SETTINGS, isSettingId, type AnySetting } from '../settings/registry.js'
-import {
-  deviceKeyOf,
-  type DeviceKey,
-  type DeviceResponse,
-  type DevicesResponse,
-  type SettingInfo,
-  type SettingsResponse
-} from '../types.js'
+import { deviceKeyOf, type DeviceKey, type SettingInfo, type SettingsResponse } from '../types.js'
 
 export interface RouteContext {
   runtime(): ConsoleRuntime | null
   /** Persist the selection, then point the running console at it. */
   select(key: DeviceKey | null): Promise<void>
+  /** The open consoles; each read and write of a setting is pushed to them. */
+  events: EventStream
 }
 
 const NOT_RUNNING = 'The plugin is not running'
@@ -89,15 +85,6 @@ function settingInfo(entry: AnySetting, runtime: ConsoleRuntime): SettingInfo {
   }
 }
 
-function deviceBody(runtime: ConsoleRuntime): DeviceResponse {
-  const key = runtime.selected
-  return {
-    selected: key,
-    location: runtime.location,
-    probe: key === null ? null : (runtime.probes.get(key) ?? null)
-  }
-}
-
 export function registerRoutes(router: PluginRouter, context: RouteContext): void {
   const readonly = router.access('readonly')
 
@@ -131,15 +118,14 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
   readonly.get('/api/devices', (_req: Request, res: Response) => {
     const runtime = running(res)
     if (runtime !== null) {
-      const body: DevicesResponse = { candidates: runtime.registry.candidates() }
-      res.json(body)
+      res.json(runtime.devicesView())
     }
   })
 
   readonly.get('/api/device', (_req: Request, res: Response) => {
     const runtime = running(res)
     if (runtime !== null) {
-      res.json(deviceBody(runtime))
+      res.json(runtime.deviceView())
     }
   })
 
@@ -168,7 +154,7 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       error(res, 500, `The selection could not be saved: ${String(failure)}`)
       return
     }
-    res.json(deviceBody(runtime))
+    res.json(runtime.deviceView())
   })
 
   router.post('/api/device/probe', async (_req: Request, res: Response) => {
@@ -208,6 +194,10 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       error(res, 400, result.reason)
       return
     }
+    context.events.send({
+      type: 'setting',
+      data: { id, qualifier: qualifier.value ?? null, operation: 'read', result }
+    })
     res.json(result)
   })
 
@@ -237,6 +227,20 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       error(res, 400, result.reason)
       return
     }
+    context.events.send({
+      type: 'setting',
+      data: { id, qualifier: qualifier.value ?? null, operation: 'write', result }
+    })
     res.json(result)
+  })
+
+  readonly.get('/api/events', (req: Request, res: Response) => {
+    const runtime = running(res)
+    if (runtime !== null) {
+      context.events.attach(req, res, [
+        { type: 'devices', data: runtime.devicesView() },
+        { type: 'device', data: runtime.deviceView() }
+      ])
+    }
   })
 }
