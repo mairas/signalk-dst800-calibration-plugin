@@ -11,7 +11,13 @@
 import type { CapabilityState, Level1State, ProbeResult } from '../devices/probe.js'
 import type { ReadResult, WriteResult } from '../settings/operations.js'
 import { SETTINGS } from '../settings/registry.js'
-import { MANUFACTURER_CODE_BITS, UNIQUE_NUMBER_BITS, type SettingInfo } from '../types.js'
+import {
+  MANUFACTURER_CODE_BITS,
+  UNIQUE_NUMBER_BITS,
+  type ResetResult,
+  type SettingInfo
+} from '../types.js'
+import { RESTORE_OPTION_NAMES } from './routes.js'
 
 /** The keys of a record the compiler has checked against a union. */
 const keysOf = <K extends string>(record: Record<K, true>): K[] => Object.keys(record) as K[]
@@ -48,6 +54,11 @@ const CONFIGURABLE = keysOf({ yes: true, no: true, unknown: true } satisfies Rec
 
 const AVAILABLE = keysOf({ yes: true, no: true, unknown: true } satisfies Record<
   SettingInfo['available'],
+  true
+>)
+
+const RESET_STATUSES = keysOf({ claimed: true, notSent: true, lost: true } satisfies Record<
+  ResetResult['status'],
   true
 >)
 
@@ -123,6 +134,15 @@ const probeResult = object({
     description: 'The session closed before the probe finished. An interrupted result is not kept.'
   }
 })
+
+const resetResult = object(
+  {
+    status: { type: 'string', enum: RESET_STATUSES },
+    probe: { ...probeResult, description: 'The probe after the claim; only when `claimed`' },
+    reason: { type: 'string', description: 'Why not `claimed`' }
+  },
+  ['probe', 'reason']
+)
 
 const selection = object({
   selected: nullable(deviceKey),
@@ -207,6 +227,12 @@ const notRunningOrUnheard = errorResponse(
   'The plugin is not running, or the device has not been heard'
 )
 
+const resetResponses = {
+  '200': { description: 'Whether the device came back', ...json(resetResult) },
+  '409': errorResponse('No device is selected'),
+  '503': notRunningOrUnheard
+}
+
 export const openApi = {
   openapi: '3.0.0',
   info: {
@@ -261,6 +287,26 @@ export const openApi = {
         }
       }
     },
+    '/api/device/reset': {
+      post: {
+        summary: 'Reboot the device, then wait for it to claim an address and probe it again',
+        description:
+          'Needs Access Level 1. The device sends no acknowledgement; it reboots, claims an address, perhaps another one, and leaves simulate mode. Waits up to 30 s for the claim and answers `claimed`, which is what a reboot looks like but not proof of one: the device also claims when another display asks.',
+        responses: resetResponses
+      }
+    },
+    '/api/device/restore': {
+      post: {
+        summary: 'Restore part of the device’s EEPROM to factory settings, then follow its reboot',
+        description:
+          'Needs Access Level 1. `all` includes the speed calibration curve. Otherwise as `/api/device/reset`.',
+        requestBody: {
+          required: true,
+          ...json(object({ option: { type: 'string', enum: RESTORE_OPTION_NAMES } }))
+        },
+        responses: { ...resetResponses, '400': errorResponse('Not a restore option') }
+      }
+    },
     '/api/settings': {
       get: {
         summary: 'Every setting, whether it can be read and written, and what the last probe found',
@@ -277,7 +323,7 @@ export const openApi = {
       get: {
         summary: 'Server-Sent Events for every open console',
         description:
-          'Starts with `devices` and `device`. Then `devices` when the device list changes, `device` when the selection, the selected device’s location or its cached probe changes (each carries the same body as the matching GET), and `setting` after each read or write of a setting that reached the session, carrying `{ id, qualifier, operation, result }`. A comment line every 25 s keeps idle proxies from closing the stream. The stream ends when the plugin stops.',
+          'Starts with `devices` and `device`. Then `devices` when the device list changes, `device` when the selection, the selected device’s location or its cached probe changes (each carries the same body as the matching GET), `setting` after each read or write of a setting that reached the session, carrying `{ id, qualifier, operation, result }`, and `reset` after a reset or restore that reached the bus, carrying its result: every value a console holds for the device is then stale. While a console is open, the plugin reads simulate mode every minute and pushes it as a `setting` event. A comment line every 25 s keeps idle proxies from closing the stream. The stream ends when the plugin stops.',
         responses: {
           '200': {
             description: 'An event stream',

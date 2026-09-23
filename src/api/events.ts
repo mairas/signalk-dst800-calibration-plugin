@@ -44,6 +44,10 @@ export class EventStream {
     }, KEEPALIVE_MS)
   }
 
+  get hasClients(): boolean {
+    return this.clients.size > 0
+  }
+
   /** Send `event` to every client. */
   send(event: ServerEvent): void {
     this.broadcast(format(event))

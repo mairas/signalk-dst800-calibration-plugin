@@ -167,7 +167,7 @@ function readTree(sources: unknown): TreeEntry[] {
   return entries
 }
 
-function claimOf(pgn: DecodedPgn): Claim | null {
+export function claimOf(pgn: DecodedPgn): Claim | null {
   const fields = pgn.fields ?? {}
   const { uniqueNumber, manufacturerCode } = fields
   if (

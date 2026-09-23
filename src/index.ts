@@ -10,11 +10,14 @@ import { openApi } from './api/openApi.js'
 import { registerRoutes } from './api/routes.js'
 import { createBus } from './protocol/n2kAdapter.js'
 import { ConsoleRuntime } from './runtime.js'
+import { readSetting } from './settings/operations.js'
+import { SIMULATE_REREAD_MS, simulateNotification, simulateStateOf } from './simulate.js'
 import {
   parsePluginConfig,
   type DeviceKey,
   type HealthResponse,
-  type PluginConfig
+  type PluginConfig,
+  type ServerEvent
 } from './types.js'
 
 export type { DeviceKey, PluginConfig, HealthResponse } from './types.js'
@@ -57,6 +60,51 @@ interface StoredOptions {
 export default function plugin(app: ServerAPI): Plugin {
   let runtime: ConsoleRuntime | null = null
   const events = new EventStream()
+  /**
+   * The sensors last seen simulating, by key. The warning stays raised while
+   * any of them is, so switching the console to another sensor cannot clear it.
+   */
+  const simulating = new Set<string>()
+  /** The warning state last published; null until one is. */
+  let warned: boolean | null = null
+  let simulateTimer: ReturnType<typeof setInterval> | null = null
+
+  const report = (error: unknown): void => {
+    app.debug(error instanceof Error ? (error.stack ?? error.message) : String(error))
+  }
+
+  const publish = (event: ServerEvent): void => {
+    events.send(event)
+    const on = simulateStateOf(event)
+    const device = runtime?.selected ?? null
+    if (on === null || device === null) {
+      return
+    }
+    const id = `${String(device.manufacturerCode)}:${String(device.uniqueNumber)}`
+    if (on) {
+      simulating.add(id)
+    } else {
+      simulating.delete(id)
+    }
+    const warn = simulating.size > 0
+    if (warn !== warned) {
+      warned = warn
+      app.handleMessage(PLUGIN_ID, simulateNotification(warn))
+    }
+  }
+
+  /** Read simulate mode again, while someone is watching the console. */
+  const rereadSimulate = async (): Promise<void> => {
+    const session = runtime?.session ?? null
+    if (!events.hasClients || session === null) {
+      return
+    }
+    const result = await readSetting(session, 'simulateMode')
+    publish({
+      type: 'setting',
+      data: { id: 'simulateMode', qualifier: null, operation: 'read', result }
+    })
+  }
 
   /**
    * Read the configuration the server currently holds.
@@ -111,18 +159,28 @@ export default function plugin(app: ServerAPI): Plugin {
         bus: createBus(app),
         sources: () => app.getPath('/sources'),
         selected: currentConfig().selectedDevice ?? null,
-        onError: (error) => {
-          app.debug(error instanceof Error ? (error.stack ?? error.message) : String(error))
-        },
+        onError: report,
         onChange: (changed) => {
-          events.send({ type: 'devices', data: changed.devicesView() })
-          events.send({ type: 'device', data: changed.deviceView() })
+          publish({ type: 'devices', data: changed.devicesView() })
+          publish({ type: 'device', data: changed.deviceView() })
         }
       })
+      simulating.clear()
+      warned = null
+      if (simulateTimer !== null) {
+        clearInterval(simulateTimer)
+      }
+      simulateTimer = setInterval(() => {
+        rereadSimulate().catch(report)
+      }, SIMULATE_REREAD_MS)
       app.setPluginStatus('Started')
     },
 
     stop() {
+      if (simulateTimer !== null) {
+        clearInterval(simulateTimer)
+        simulateTimer = null
+      }
       events.close()
       runtime?.close()
       runtime = null
@@ -144,6 +202,7 @@ export default function plugin(app: ServerAPI): Plugin {
       registerRoutes(router, {
         runtime: () => runtime,
         events,
+        publish,
         select: async (key) => {
           await saveSelection(key)
           runtime?.select(key)

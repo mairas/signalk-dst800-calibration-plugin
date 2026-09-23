@@ -12,6 +12,8 @@ export interface MockServerAPI {
   statuses: string[]
   errors: string[]
   debugged: string[]
+  /** Every delta the plugin handed to `handleMessage`. */
+  deltas: unknown[]
   /** Raw options record as the server stores it: { enabled, configuration }. */
   storedOptions: { enabled?: boolean; configuration?: unknown }
   /** What `getPath('/sources')` returns. */
@@ -29,6 +31,7 @@ export function createMockServerAPI(configuration: unknown = {}): MockServerAPI 
     statuses: [],
     errors: [],
     debugged: [],
+    deltas: [],
     storedOptions: { configuration },
     sources: {},
     saveError: null,
@@ -54,6 +57,9 @@ export function createMockServerAPI(configuration: unknown = {}): MockServerAPI 
         mock.storedOptions = { ...mock.storedOptions, configuration: options }
       }
       callback(failure)
+    },
+    handleMessage(_id: string, delta: unknown) {
+      mock.deltas.push(delta)
     },
     setPluginStatus(message: string) {
       mock.statuses.push(message)

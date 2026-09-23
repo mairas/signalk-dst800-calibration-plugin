@@ -56,6 +56,25 @@ export interface DeviceResponse {
   probe: ProbeResult | null
 }
 
+/**
+ * Body of `POST /api/device/reset` and `POST /api/device/restore`.
+ *
+ * Neither frame is acknowledged. The only sign that the device acted on it
+ * is a fresh Address Claim from the same unique number, which a device that
+ * ignored the frame also sends when another display asks for claims.
+ */
+export type ResetResult =
+  /**
+   * The device claimed an address again and was probed again. A device also
+   * claims when another display asks, so this is what a reboot looks like,
+   * not proof of one.
+   */
+  | { status: 'claimed'; probe: ProbeResult }
+  /** The frame never went out: the unlock was refused, or the session closed or was full. */
+  | { status: 'notSent'; reason: string }
+  /** The frame went out, but the device did not claim an address again, or the console moved on. */
+  | { status: 'lost'; reason: string }
+
 /** A setting as the console lists it. */
 export interface SettingInfo {
   id: string
@@ -89,6 +108,8 @@ export type ServerEvent =
   | { type: 'devices'; data: DevicesResponse }
   | { type: 'device'; data: DeviceResponse }
   | { type: 'setting'; data: SettingEvent }
+  /** The device was reset or restored: every value a console holds for it is stale. */
+  | { type: 'reset'; data: ResetResult }
 
 const isField = (value: unknown, bits: number): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < 2 ** bits

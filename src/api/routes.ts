@@ -7,7 +7,8 @@
  * which is admin when server security is enabled: reading a setting too,
  * because a read of a Level 1 setting sends the unlock, and a refused unlock
  * counts toward the two that make Level 1 unavailable for 15 minutes. Never
- * widen these: later routes reboot the sensor and wipe its EEPROM.
+ * widen these: the reset and restore routes reboot the sensor and wipe its
+ * EEPROM.
  *
  * Device outcomes, including refusals and timeouts, answer 200 with the
  * outcome in the body, because the console needs the device's reason to show
@@ -21,18 +22,29 @@ import type { Request, Response } from 'express'
 import type { PluginRouter } from '@signalk/server-api'
 import type { CapabilityState } from '../devices/probe.js'
 import { capabilityId } from '../devices/probe.js'
+import { masterReset, resetEeprom } from '../protocol/codec.js'
+import type { OutgoingRaw } from '../protocol/messages.js'
+import { EepromResetOption } from '../protocol/pids.js'
 import type { ConsoleRuntime } from '../runtime.js'
 import type { EventStream } from './events.js'
 import { readSetting, writeSetting } from '../settings/operations.js'
 import { SETTINGS, isSettingId, type AnySetting } from '../settings/registry.js'
-import { deviceKeyOf, type DeviceKey, type SettingInfo, type SettingsResponse } from '../types.js'
+import {
+  deviceKeyOf,
+  type DeviceKey,
+  type ServerEvent,
+  type SettingInfo,
+  type SettingsResponse
+} from '../types.js'
 
 export interface RouteContext {
   runtime(): ConsoleRuntime | null
   /** Persist the selection, then point the running console at it. */
   select(key: DeviceKey | null): Promise<void>
-  /** The open consoles; each read and write of a setting is pushed to them. */
+  /** The open consoles. */
   events: EventStream
+  /** Push `event` to the open consoles, and act on what it says about simulate mode. */
+  publish(event: ServerEvent): void
 }
 
 const NOT_RUNNING = 'The plugin is not running'
@@ -50,6 +62,27 @@ const error = (res: Response, status: number, message: string): void => {
 }
 
 const BAD_QUALIFIER = 'The qualifier must be a non-negative integer'
+
+/**
+ * The EEPROM sections a restore may name. The unique number is left out: it
+ * is half of the key the console follows the device by.
+ */
+const RESTORE_OPTIONS = {
+  all: EepromResetOption.All,
+  priorities: EepromResetOption.Priorities,
+  updateRates: EepromResetOption.UpdateRates,
+  prioritiesAndUpdateRates: EepromResetOption.PrioritiesAndUpdateRates
+} as const
+
+export const RESTORE_OPTION_NAMES = Object.keys(RESTORE_OPTIONS)
+
+function restoreOptionOf(body: unknown): EepromResetOption | null {
+  const name =
+    typeof body === 'object' && body !== null ? (body as { option?: unknown }).option : null
+  return typeof name === 'string' && Object.hasOwn(RESTORE_OPTIONS, name)
+    ? RESTORE_OPTIONS[name as keyof typeof RESTORE_OPTIONS]
+    : null
+}
 
 /**
  * A qualifier from the query string or the body: absent, or a non-negative
@@ -164,6 +197,31 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     }
   })
 
+  /** Send `message` to the selected device and follow it through the reboot. */
+  const restart = async (res: Response, message: (address: number) => OutgoingRaw) => {
+    const selected = sessionOf(res)
+    if (selected === null) {
+      return
+    }
+    const { runtime, session } = selected
+    const result = await runtime.restart(session, message(session.address))
+    if (result.status !== 'notSent') {
+      context.publish({ type: 'reset', data: result })
+    }
+    res.json(result)
+  }
+
+  router.post('/api/device/reset', (_req: Request, res: Response) => restart(res, masterReset))
+
+  router.post('/api/device/restore', async (req: Request, res: Response) => {
+    const option = restoreOptionOf(req.body)
+    if (option === null) {
+      error(res, 400, `Send { "option": one of ${RESTORE_OPTION_NAMES.join(', ')} }`)
+      return
+    }
+    await restart(res, (address) => resetEeprom(address, option))
+  })
+
   readonly.get('/api/settings', (_req: Request, res: Response) => {
     const runtime = running(res)
     if (runtime !== null) {
@@ -194,7 +252,7 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       error(res, 400, result.reason)
       return
     }
-    context.events.send({
+    context.publish({
       type: 'setting',
       data: { id, qualifier: qualifier.value ?? null, operation: 'read', result }
     })
@@ -227,7 +285,7 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       error(res, 400, result.reason)
       return
     }
-    context.events.send({
+    context.publish({
       type: 'setting',
       data: { id, qualifier: qualifier.value ?? null, operation: 'write', result }
     })
