@@ -336,9 +336,10 @@ export class DeviceSession {
    *
    * Master reset and EEPROM restore are the only two, and neither is
    * acknowledged, so there is no reply to correlate. They go through the queue
-   * anyway so they cannot land while a request is in flight, and both drop the
-   * device's access level, so the session forgets its grant and its learned
-   * address afterwards.
+   * anyway so they cannot land while a request is in flight. With no reply,
+   * a refused frame looks like any other, so the session unlocks right before
+   * sending one. Both drop the device's access level, so the session forgets
+   * its grant and its learned address afterwards.
    */
   async sendRaw(
     message: OutgoingRaw,
@@ -350,6 +351,9 @@ export class DeviceSession {
         return closed
       }
       if (options.requiresLevel1 === true) {
+        // Nothing answers this frame, so a grant the device dropped at a power
+        // cycle would cost it silently. Unlock afresh rather than trust the record.
+        this.access.forget()
         const blocked = await this.ensureLevel1()
         if (blocked !== null) {
           return blocked
