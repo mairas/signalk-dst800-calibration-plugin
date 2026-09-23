@@ -41,10 +41,11 @@ export type WriteResult =
   | { status: 'invalid'; reason: string }
   /**
    * The command never went out: the device refused the unlock it needs, the
-   * session has Level 1 marked unavailable, or its queue is full.
+   * session has Level 1 marked unavailable, its queue is full, or it closed
+   * before the command was sent.
    */
   | { status: 'notSent'; reason: string }
-  /** No answer to the command, or the session was closed. Nothing was read back. */
+  /** No answer to the command, or the session closed while it was in flight. Nothing was read back. */
   | { status: 'unknown'; reason: string }
   /**
    * The device refused the command. `refusedFields` names the fields it

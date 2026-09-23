@@ -60,3 +60,25 @@ export function onN2k(app: ServerAPI, handler: N2kHandler): () => void {
     events(app).removeListener('N2KAnalyzerOut', handler)
   }
 }
+
+/**
+ * The server's events as a session bus.
+ *
+ * A pre-encoded frame carries a `payload` and goes out untouched; everything
+ * else is canboatjs JSON.
+ */
+export function createBus(app: ServerAPI): {
+  send(message: OutgoingPgn | OutgoingRaw): void
+  subscribe(handler: N2kHandler): () => void
+} {
+  return {
+    send: (message) => {
+      if ('payload' in message) {
+        sendN2kRaw(app, message)
+      } else {
+        sendN2k(app, message)
+      }
+    },
+    subscribe: (handler) => onN2k(app, handler)
+  }
+}

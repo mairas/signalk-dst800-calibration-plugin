@@ -311,15 +311,38 @@ describe('settings operations', () => {
       expect(bus.targets()).toEqual([PGN.accessLevel, PGN.proprietary, PGN.accessLevel])
       expect(session.level1Unavailable).toBe(false)
     })
-    it('reports a closed session as unknown, and sends nothing', async () => {
+    it('reports a write on a closed session as not sent, and sends nothing', async () => {
       session.close('The device moved from address 22 to 31')
       const result = await writeSetting(session, 'depthOffset', 0.35, undefined, now)
 
       expect(result).toEqual({
-        status: 'unknown',
+        status: 'notSent',
         reason: 'The device moved from address 22 to 31'
       })
       expect(bus.sent).toHaveLength(0)
+    })
+
+    it('reports a write as not sent when the session closes during its unlock', async () => {
+      const pending = writeSetting(session, 'temperatureOffset', 0.5, 1, now)
+      await flush()
+      session.close()
+      const result = await pending
+
+      expect(result).toEqual({ status: 'notSent', reason: 'The session was closed' })
+      expect(bus.targets()).toEqual([PGN.accessLevel])
+    })
+
+    it('reports a retried write as not sent when the session closes while it waits out the mute', async () => {
+      const first = writeSetting(session, 'depthOffset', 0.35, undefined, now)
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await first
+      const retry = writeSetting(session, 'depthOffset', 0.35, undefined, now)
+      await vi.advanceTimersByTimeAsync(10)
+      session.close()
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect(await retry).toEqual({ status: 'notSent', reason: 'The session was closed' })
+      expect(bus.sent).toHaveLength(1)
     })
 
     it('writes a qualified setting for the source it names, and reads back that source', async () => {

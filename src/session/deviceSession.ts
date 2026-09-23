@@ -54,7 +54,7 @@ const TIMEOUTS_BEFORE_FORGETTING_GATEWAY = 2
  * than repeating the same failure. The cap stops a device that answers once an
  * hour from making every control feel broken.
  */
-const MAX_ADAPTIVE_TIMEOUT_MS = 8000
+export const MAX_ADAPTIVE_TIMEOUT_MS = 8000
 
 const GLOBAL_ADDRESS = 255
 
@@ -345,8 +345,9 @@ export class DeviceSession {
     options: { requiresLevel1?: boolean } = {}
   ): Promise<Outcome<void>> {
     const outcome = await this.enqueue(async () => {
-      if (this.closedOutcome !== null) {
-        return this.closedOutcome
+      const closed = this.refusedAfterClose()
+      if (closed !== null) {
+        return closed
       }
       if (options.requiresLevel1 === true) {
         const blocked = await this.ensureLevel1()
@@ -401,8 +402,9 @@ export class DeviceSession {
    */
   async unlock(): Promise<Outcome<void>> {
     const outcome = await this.enqueue<never>(async () => {
-      if (this.closedOutcome !== null) {
-        return this.closedOutcome
+      const closed = this.refusedAfterClose()
+      if (closed !== null) {
+        return closed
       }
       return (await this.ensureLevel1()) ?? { status: 'answered', value: [] }
     })
@@ -423,6 +425,19 @@ export class DeviceSession {
     this.closedOutcome = outcome
     this.unsubscribe()
     this.inFlight?.abort(outcome)
+  }
+
+  /**
+   * The session's own refusal of a frame it has not sent by `close()`.
+   *
+   * Rejected, not unknown, for the same reason as a full queue: the frame never
+   * reached the bus. A request already in flight when the session closes stays
+   * unknown, because its frame did.
+   */
+  private refusedAfterClose(): Outcome<never> | null {
+    return this.closedOutcome === null
+      ? null
+      : { status: 'rejected', reason: this.closedOutcome.reason }
   }
 
   private enqueue<T>(task: () => Promise<Outcome<T[]>>): Promise<Outcome<T[]>> {
@@ -503,8 +518,9 @@ export class DeviceSession {
   }
 
   private async run<T>(spec: ReadSpec<T> | CommandSpec): Promise<Outcome<T[]>> {
-    if (this.closedOutcome !== null) {
-      return this.closedOutcome
+    const closed = this.refusedAfterClose()
+    if (closed !== null) {
+      return closed
     }
     if (spec.requiresLevel1 === true) {
       const blocked = await this.ensureLevel1()
@@ -555,6 +571,11 @@ export class DeviceSession {
       return null
     }
     const result = await this.attempt<never>({ message: unlockLevel1(this.address) })
+    const closed = this.refusedAfterClose()
+    if (closed !== null) {
+      // The operation that needed the unlock never went out.
+      return closed
+    }
     if (result.outcome.status === 'answered') {
       this.access.recordUnlock(this.now())
       return null
@@ -582,8 +603,11 @@ export class DeviceSession {
 
   private startAttempt<T>(spec: ReadSpec<T> | CommandSpec): Promise<AttemptResult<T>> {
     return new Promise<AttemptResult<T>>((resolve) => {
-      if (this.closedOutcome !== null) {
-        resolve({ outcome: this.closedOutcome, retry: 'none' })
+      const closed = this.refusedAfterClose()
+      if (closed !== null) {
+        // Not sent. Nothing earlier in this operation was applied either: a
+        // retry follows only a refusal the device gave.
+        resolve({ outcome: closed, retry: 'none' })
         return
       }
 
