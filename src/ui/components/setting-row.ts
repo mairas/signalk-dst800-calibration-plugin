@@ -1,7 +1,7 @@
 import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import type { DeviceKey } from '../../types.js'
-import { checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
+import { FACTORY_CURVE, checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
 import { isRecord, sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
@@ -300,6 +300,49 @@ export class SettingRow extends LightElement {
     `
   }
 
+  /** Put back the curve the sensor left the factory with, after a confirmation. */
+  private factoryControl() {
+    if (!this.confirming) {
+      return html`<button
+        type="button"
+        class="btn btn-sm btn-outline-secondary mt-2"
+        ?disabled=${this.blocked}
+        @click=${() => {
+          this.confirming = true
+        }}
+      >
+        Restore factory curve…
+      </button>`
+    }
+    return html`<div class="bg-warning-subtle border border-warning-subtle rounded p-3 mt-2">
+      <p class="mb-2">
+        This replaces the curve on the sensor with the one it left the factory with; the table then
+        shows it. <a href="#snapshots">Export the settings</a> or the curve first to keep this one.
+      </p>
+      <button
+        type="button"
+        class="btn btn-sm btn-warning me-2"
+        ?disabled=${this.blocked}
+        @click=${() => {
+          this.confirming = false
+          this.draft = null
+          this.emitWrite(FACTORY_CURVE)
+        }}
+      >
+        Restore factory curve
+      </button>
+      <button
+        type="button"
+        class="btn btn-sm btn-link"
+        @click=${() => {
+          this.confirming = false
+        }}
+      >
+        Cancel
+      </button>
+    </div>`
+  }
+
   /** The curve the table holds and its problems, checked once per use. */
   private curveCheck(): ReturnType<typeof checkCurve> | null {
     return this.unit === null ? null : checkCurve(pairs(this.fields), this.unit)
@@ -352,6 +395,7 @@ export class SettingRow extends LightElement {
           this.draft = event.detail.rows.flat()
         }}
       ></dst-curve-csv>
+      ${this.factoryControl()}
     `
   }
 

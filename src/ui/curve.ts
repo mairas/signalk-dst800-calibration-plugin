@@ -4,6 +4,7 @@
  * enforces, so a curve the plugin would refuse never leaves the page.
  */
 
+export { FACTORY_CURVE } from '../protocol/pids.js'
 import {
   CURVE_HZ_RESOLUTION,
   MAX_CURVE_HZ,

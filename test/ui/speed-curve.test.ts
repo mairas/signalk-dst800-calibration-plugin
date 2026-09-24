@@ -322,6 +322,101 @@ describe('speed curve', () => {
     ).toBe(true)
     expect(button(curve(el), 'Add point').disabled).toBe(true)
   })
+  describe('factory curve', () => {
+    const FACTORY = [
+      { hz: 0, speed: 0 },
+      { hz: 20, speed: 2 },
+      { hz: 80, speed: 8 }
+    ]
+
+    it('restores the factory curve after a confirmation, and shows the curve the sensor then holds', async () => {
+      const bodies: unknown[] = []
+      curveDevice({
+        bodies,
+        onWrite: (value) =>
+          value === 'factory'
+            ? { status: 'applied', stored: FACTORY, readAt: READ_AT }
+            : { status: 'invalid', reason: 'unexpected' }
+      })
+      const el = await open()
+
+      button(curve(el), 'Restore factory curve…').click()
+      await settle()
+
+      expect(text(curve(el))).toContain('replaces the curve on the sensor')
+      expect(curve(el).querySelector('a[href="#snapshots"]')).not.toBeNull()
+      expect(bodies).toEqual([])
+
+      button(curve(el), 'Restore factory curve').click()
+      await settle()
+
+      expect(bodies).toEqual(['factory'])
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['20.0', '3.89'],
+        ['80.0', '15.55']
+      ])
+      expect(text(curve(el))).toContain('Stored')
+    })
+
+    it('sends nothing when the confirmation is cancelled', async () => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      button(curve(el), 'Restore factory curve…').click()
+      await settle()
+      button(curve(el), 'Cancel').click()
+      await settle()
+
+      expect(bodies).toEqual([])
+      expect(text(curve(el))).not.toContain('replaces the curve on the sensor')
+    })
+
+    it('says the sensor refused a restore, with its reason', async () => {
+      curveDevice({
+        onWrite: (value) => ({
+          status: 'rejected',
+          reason: 'Access denied',
+          refusedFields: [],
+          detail: {
+            acknowledgedPgn: 126720,
+            src: 22,
+            ok: false,
+            pgnError: 'Access denied',
+            intervalPriorityError: 'Acknowledge',
+            parameterErrors: [],
+            missingParameterCodes: 0
+          },
+          requested: value
+        })
+      })
+      const el = await open()
+
+      button(curve(el), 'Restore factory curve…').click()
+      await settle()
+      button(curve(el), 'Restore factory curve').click()
+      await settle()
+
+      expect(text(curve(el))).toContain(
+        'The sensor refused the factory curve: it needs Level 1 access.'
+      )
+    })
+
+    it('cannot restore while the sensor is off the bus', async () => {
+      curveDevice()
+      const el = await open()
+
+      FakeEventSource.latest.push({
+        type: 'device',
+        data: selected({ location: { state: 'waiting', address: 22 } })
+      })
+      await settle()
+
+      expect(button(curve(el), 'Restore factory curve…').disabled).toBe(true)
+    })
+  })
+
   describe('as CSV', () => {
     /** Capture the files the page saves, as the browser's download would. */
     const downloads = () => {
