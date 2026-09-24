@@ -6,6 +6,7 @@
  * out in the user's units and converts what the user typed back to SI.
  */
 
+import { CURVE_SPEED_RESOLUTION } from '../protocol/pids.js'
 import type { ReadResult, WriteResult } from '../types.js'
 import type { UnitSpec } from './units.js'
 
@@ -16,6 +17,7 @@ export type Editor =
   | { kind: 'description' }
   | { kind: 'filter' }
   | { kind: 'tripReset' }
+  | { kind: 'curve' }
 
 export interface SettingView {
   label: string
@@ -56,6 +58,12 @@ export const VIEWS: Partial<Record<string, SettingView>> = {
     unit: { fixed: { symbol: 'm/s', decimals: 1 } }
   },
   speedFilter: { label: 'Speed filter', help: FILTER_HELP, editor: { kind: 'filter' } },
+  speedCurve: {
+    label: 'Calibration curve',
+    help: 'Each point pairs a paddlewheel frequency with the boat speed it stands for. Frequencies must increase from point to point.',
+    editor: { kind: 'curve' },
+    unit: { category: 'speed', resolution: CURVE_SPEED_RESOLUTION }
+  },
   temperatureOffset: {
     label: 'Temperature offset',
     editor: { kind: 'number' },
@@ -94,6 +102,7 @@ export const VIEWS: Partial<Record<string, SettingView>> = {
 export const SECTIONS: readonly { id: string; title: string; settings: readonly string[] }[] = [
   { id: 'depth', title: 'Depth', settings: ['depthOffset', 'speedOfSound'] },
   { id: 'speed', title: 'Speed', settings: ['speedFilter'] },
+  { id: 'calibration', title: 'Speed calibration', settings: ['speedCurve'] },
   { id: 'temperature', title: 'Temperature', settings: ['temperatureOffset', 'temperatureFilter'] },
   { id: 'log', title: 'Distance log', settings: ['distanceLog'] },
   { id: 'network', title: 'NMEA 2000 output', settings: ['transmissionIntervalOverride'] },
@@ -112,7 +121,13 @@ export type Outcome =
   | { kind: 'differs'; requested: unknown; stored: unknown }
   | { kind: 'accepted' }
   | { kind: 'unconfirmed' }
-  | { kind: 'refused'; requested: unknown; reason: string }
+  | {
+      kind: 'refused'
+      requested: unknown
+      reason: string
+      /** The fields the sensor refused, as the plugin names them. */
+      fields: readonly { field: string; error: string }[]
+    }
   /** The sensor did not answer the write, but a read afterwards finds the value asked for. */
   | { kind: 'holdsRequested' }
   /** The sensor refused a read, with its acknowledgement. */
@@ -135,7 +150,7 @@ const ERROR_WORDS: Partial<Record<string, string>> = {
   'PGN not supported': 'it does not support this'
 }
 
-const inWords = (errors: readonly string[]): string =>
+export const inWords = (errors: readonly string[]): string =>
   [...new Set(errors)].map((error) => ERROR_WORDS[error] ?? error).join('; ')
 
 function refusalReason(result: Extract<WriteResult, { status: 'rejected' }>): string {
@@ -171,7 +186,12 @@ export function outcomeOf(
       return result.readBack === undefined ? { kind: 'accepted' } : { kind: 'unconfirmed' }
     case 'rejected':
       return 'refusedFields' in result
-        ? { kind: 'refused', requested: result.requested, reason: refusalReason(result) }
+        ? {
+            kind: 'refused',
+            requested: result.requested,
+            reason: refusalReason(result),
+            fields: result.refusedFields
+          }
         : readRefusal(result)
     case 'unknown':
       return { kind: 'noAnswer', operation }

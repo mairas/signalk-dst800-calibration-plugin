@@ -37,6 +37,7 @@ export const SI: Units = { preset: { categories: {} }, definitions: {} }
 const BASE_UNITS: Partial<Record<string, string>> = {
   depth: 'm',
   distance: 'm',
+  speed: 'm/s',
   temperature: 'K'
 }
 

@@ -38,6 +38,31 @@
         padding: 0.25rem 0;
         z-index: 1030;
       }
+      .dst-curve-plot {
+        max-height: 20rem;
+      }
+      .dst-curve-grid {
+        stroke: var(--bs-border-color, #dee2e6);
+        stroke-width: 1;
+      }
+      .dst-curve-label {
+        fill: var(--bs-secondary-color, #6c757d);
+        font-size: 10px;
+      }
+      .dst-curve-line {
+        fill: none;
+        stroke: var(--bs-primary, #0d6efd);
+        stroke-width: 2;
+      }
+      .dst-curve-stored {
+        fill: none;
+        stroke: var(--bs-secondary-color, #6c757d);
+        stroke-width: 1.5;
+        stroke-dasharray: 4 3;
+      }
+      .dst-curve-point {
+        fill: var(--bs-primary, #0d6efd);
+      }
       @media (max-width: 575.98px) {
         dst-app .btn {
           min-height: 44px;
