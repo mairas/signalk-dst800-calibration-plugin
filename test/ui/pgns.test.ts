@@ -334,7 +334,7 @@ describe('PGN intervals and priorities', () => {
     expect(sent.filter((s) => s.method === 'POST')).toEqual([
       { method: 'POST', path: '/device/restore', body: { option } }
     ])
-    expect(text(section)).toContain('Restored. The sensor restarted.')
+    expect(text(section)).toContain('The sensor claimed its address again')
     // What was set before the restart no longer describes the sensor.
     expect(text(pgnRow(el, 128267))).not.toContain('Stored')
     expect(intervalInput(pgnRow(el, 128267))?.value).toBe('')
@@ -368,7 +368,7 @@ describe('PGN intervals and priorities', () => {
     answer({ status: 'claimed', probe })
     await settle()
 
-    expect(text(section())).toContain('Restored. The sensor restarted.')
+    expect(text(section())).toContain('The sensor claimed its address again')
   })
 
   it('says how a restore went while the list is still being read again', async () => {
@@ -414,7 +414,7 @@ describe('PGN intervals and priorities', () => {
     await settle()
 
     expect(el.querySelector('[data-pgn]')).toBeNull()
-    expect(text(section())).toContain('Restored. The sensor restarted.')
+    expect(text(section())).toContain('The sensor claimed its address again')
   })
 
   it('drops a PGN list that arrives after another sensor was selected', async () => {

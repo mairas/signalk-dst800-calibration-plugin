@@ -128,7 +128,13 @@ export class DstApp extends LightElement {
     if (!relevant || device === null || this.probing || this.autoProbed) {
       return
     }
-    if (device.selected === null || device.location?.state !== 'present' || device.probe !== null) {
+    if (device.probe !== null) {
+      // This selection has its probe. If the plugin drops it for a restart,
+      // it probes again itself once the sensor claims an address.
+      this.autoProbed = true
+      return
+    }
+    if (device.selected === null || device.location?.state !== 'present') {
       return
     }
     this.autoProbed = true
@@ -156,6 +162,9 @@ export class DstApp extends LightElement {
       }
       case 'reset':
         this.querySelector('dst-settings')?.forget()
+        // The restart is over. A sensor that did not come back has no probe,
+        // and gets one when it is heard again.
+        this.autoProbed = false
         break
     }
   }

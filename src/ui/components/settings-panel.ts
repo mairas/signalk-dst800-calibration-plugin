@@ -16,7 +16,17 @@ import { sameCurve } from '../curve.js'
 import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
+  describeRestart,
+  isPgnRestore,
+  routeOf,
+  type RestartAction,
+  type RestartRequest,
+  type RestartResult,
+  type Restarted
+} from '../restart.js'
+import {
   SECTIONS,
+  type CustomSection,
   TEMPERATURE_SOURCES,
   VIEWS,
   age,
@@ -31,7 +41,7 @@ import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
 import './pgn-table.js'
 import './snapshot-panel.js'
-import type { RestoreRequest } from './pgn-table.js'
+import './danger-zone.js'
 
 /** How often the read age moves on screen. */
 const TICK_MS = 5000
@@ -39,11 +49,14 @@ const TICK_MS = 5000
 /** Read with the rest, shown in the header rather than as a row. */
 const PRODUCT = 'productInformation'
 
+/** The first status that says the server failed rather than refused. */
+const SERVER_ERROR = 500
+
+/** The plugin's answer when the sensor is not on the bus, before anything is sent. */
+const SERVICE_UNAVAILABLE = 503
+
 /** The section that holds the transmitted PGNs, below its settings. */
 const PGN_SECTION = 'network'
-
-/** The section that saves and loads snapshots rather than listing settings. */
-const SNAPSHOT_SECTION = 'snapshots'
 
 /** Its setting that decides whether the intervals set per PGN apply. */
 const OVERRIDE = 'transmissionIntervalOverride'
@@ -86,9 +99,14 @@ export class SettingsPanel extends LightElement {
   @state() private reading = false
   @state() private pgns: PgnListResult | null = null
   @state() private pgnsError: string | null = null
-  /** A restore of default intervals or priorities, which restarts the sensor and outlives the table. */
-  @state() private restoring = false
-  @state() private restored: ResetResult | null = null
+  /**
+   * An action that restarts the sensor. The sections that offer them vanish
+   * while the sensor is away, so the panel keeps how it went.
+   */
+  @state() private restarting: RestartAction | null = null
+  @state() private restarted: Restarted | null = null
+  /** The restart request in flight; a selection change forgets it. */
+  private restartToken: object | null = null
 
   private ticker: ReturnType<typeof setInterval> | null = null
   private probeSeen: string | null = null
@@ -130,7 +148,9 @@ export class SettingsPanel extends LightElement {
       this.probeSeen = null
       this.pgns = null
       this.pgnsError = null
-      this.restored = null
+      this.restarting = null
+      this.restartToken = null
+      this.restarted = null
     }
   }
 
@@ -230,22 +250,51 @@ export class SettingsPanel extends LightElement {
     this.pgnsError = failure
   }
 
-  private async restore(event: RestoreRequest): Promise<void> {
-    const key = this.selected
-    this.restoring = true
-    this.restored = null
-    let result: ResetResult
+  /** One restart at a time: a second would reach a sensor that is already rebooting. */
+  private async restart(event: RestartRequest): Promise<void> {
+    if (this.restarting !== null) {
+      return
+    }
+    const { action } = event.detail
+    const { path, body } = routeOf(action)
+    const token = {}
+    this.restartToken = token
+    this.restarting = action
+    this.restarted = null
+    let result: RestartResult
     try {
-      result = await request<ResetResult>('POST', '/device/restore', {
-        option: event.detail.option
-      })
+      result = await request<ResetResult>('POST', path, body)
     } catch (cause) {
-      result = { status: 'notSent', reason: describeFailure(cause) }
+      // The plugin refuses before sending with a 4xx, or a 503 when the sensor
+      // is not on the bus. Anything else, a lost connection included, may come
+      // after the frame went out.
+      const refused =
+        cause instanceof ApiError &&
+        (cause.status < SERVER_ERROR || cause.status === SERVICE_UNAVAILABLE)
+      result = refused
+        ? { status: 'notSent', reason: describeFailure(cause) }
+        : { status: 'unanswered', reason: describeFailure(cause) }
     }
-    this.restoring = false
-    if (sameKey(this.selected, key)) {
-      this.restored = result
+    if (this.restartToken === token) {
+      this.restartToken = null
+      this.restarting = null
+      this.restarted = { action, result }
     }
+  }
+
+  /** The restart in flight or its outcome, for while the sections are gone with the probe. */
+  private restartLine() {
+    if (this.restarting !== null) {
+      return html`<p class="text-body-secondary" role="status">
+        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        The sensor is restarting…
+      </p>`
+    }
+    if (this.restarted === null) {
+      return nothing
+    }
+    const { tone, text } = describeRestart(this.restarted)
+    return html`<p class=${`text-${tone}-emphasis`} role="status">${text}</p>`
   }
 
   private change(slot: Slot, edit: (row: RowState) => RowState): void {
@@ -399,25 +448,43 @@ export class SettingsPanel extends LightElement {
     return this.row(info, { id: info.id, qualifier: null }, view.label, view.help ?? '')
   }
 
+  private custom(id: string, title: string, kind: CustomSection) {
+    return html`
+      <section
+        id=${id}
+        class=${`card mb-3 ${kind === 'danger' ? 'border-danger-subtle' : ''}`}
+        aria-labelledby=${`${id}-title`}
+      >
+        <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
+        ${
+          kind === 'snapshots'
+            ? html`<dst-snapshots
+                .selected=${this.selected}
+                .units=${this.units}
+                .disabled=${!this.present}
+              ></dst-snapshots>`
+            : html`<dst-danger-zone
+                .selected=${this.selected}
+                .disabled=${!this.present}
+                .restarting=${this.restarting}
+                .restarted=${this.restarted}
+                @restart=${(event: RestartRequest) => this.restart(event)}
+              ></dst-danger-zone>`
+        }
+      </section>
+    `
+  }
+
   private section(id: string, title: string, settings: readonly string[]) {
-    if (id === SNAPSHOT_SECTION) {
-      return html`
-        <section id=${id} class="card mb-3" aria-labelledby=${`${id}-title`}>
-          <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
-          <dst-snapshots
-            .selected=${this.selected}
-            .units=${this.units}
-            .disabled=${!this.present}
-          ></dst-snapshots>
-        </section>
-      `
-    }
     const infos = (this.infos ?? []).filter(
       (info) => settings.includes(info.id) && info.available !== 'no'
     )
     const pgns =
       id === PGN_SECTION &&
-      (this.pgns !== null || this.pgnsError !== null || this.restoring || this.restored !== null)
+      (this.pgns !== null ||
+        this.pgnsError !== null ||
+        isPgnRestore(this.restarting ?? undefined) ||
+        isPgnRestore(this.restarted?.action))
     if (infos.length === 0 && !pgns) {
       return nothing
     }
@@ -434,9 +501,9 @@ export class SettingsPanel extends LightElement {
                   .listError=${this.pgnsError}
                   .override=${typeof override === 'boolean' ? override : null}
                   .disabled=${!this.present}
-                  .restoring=${this.restoring}
-                  .restored=${this.restored}
-                  @restore=${(event: RestoreRequest) => this.restore(event)}
+                  .restarting=${this.restarting}
+                  .restarted=${this.restarted}
+                  @restart=${(event: RestartRequest) => this.restart(event)}
                 ></dst-pgns>`
               : nothing
           }
@@ -478,10 +545,14 @@ export class SettingsPanel extends LightElement {
       return nothing
     }
     if ((this.device?.probe ?? null) === null) {
-      return html`<p class="text-body-secondary">
-        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
-        Checking what the sensor supports…
-      </p>`
+      // A restart drops the probe, and with it every section; its outcome stays here.
+      return html`
+        ${this.restartLine()}
+        <p class="text-body-secondary">
+          <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+          Checking what the sensor supports…
+        </p>
+      `
     }
     if (this.loadError !== null) {
       return html`<div class="alert alert-danger">Cannot list the settings: ${this.loadError}</div>`
@@ -491,7 +562,11 @@ export class SettingsPanel extends LightElement {
     }
     return html`
       ${this.readLine()}
-      ${SECTIONS.map((section) => this.section(section.id, section.title, section.settings))}
+      ${SECTIONS.map((section) =>
+        section.custom === undefined
+          ? this.section(section.id, section.title, section.settings)
+          : this.custom(section.id, section.title, section.custom)
+      )}
     `
   }
 }
