@@ -80,7 +80,16 @@ export const onRequest = (pgn: number): boolean => ON_REQUEST[pgn] !== undefined
 
 const MS_PER_S = 1000
 
-export const seconds = (ms: number): string => `${(ms / MS_PER_S).toFixed(2)} s`
+/** Milliseconds as seconds, to the 10 ms an interval is measured and set to. */
+export const secondsText = (ms: number): string => (ms / MS_PER_S).toFixed(2)
+
+export const seconds = (ms: number): string => `${secondsText(ms)} s`
+
+/** What was measured on the bus, in words. */
+export function describeMeasured(intervalMs: number, priority: number | null): string {
+  const rate = intervalMs > 0 ? `every ${seconds(intervalMs)}` : 'not sent periodically'
+  return priority === null ? `Measured: ${rate}` : `Measured: ${rate}, priority ${String(priority)}`
+}
 
 /** The range an interval may take, as the console quotes it. */
 export const intervalRange = (minMs: number): string =>

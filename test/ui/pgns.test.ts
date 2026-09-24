@@ -29,11 +29,41 @@ const OVERRIDE: SettingInfo = {
 const LIST: PgnListResult = {
   status: 'answered',
   pgns: [
-    { pgn: 128267, minIntervalMs: 50, telemetry: false },
-    { pgn: 130316, minIntervalMs: 50, telemetry: false },
-    { pgn: 60928, minIntervalMs: 50, telemetry: false },
-    { pgn: 126996, minIntervalMs: 100, telemetry: false },
-    { pgn: 65409, minIntervalMs: 50, telemetry: true }
+    {
+      pgn: 128267,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 1000,
+      observedPriority: 3
+    },
+    {
+      pgn: 130316,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 2000,
+      observedPriority: 5
+    },
+    {
+      pgn: 60928,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 0,
+      observedPriority: null
+    },
+    {
+      pgn: 126996,
+      minIntervalMs: 100,
+      telemetry: false,
+      observedIntervalMs: 0,
+      observedPriority: 6
+    },
+    {
+      pgn: 65409,
+      minIntervalMs: 50,
+      telemetry: true,
+      observedIntervalMs: 0,
+      observedPriority: null
+    }
   ]
 }
 
@@ -145,14 +175,81 @@ describe('PGN intervals and priorities', () => {
     expect(prioritySelect(pgnRow(el, 128267))).not.toBeNull()
   })
 
-  it('says it cannot show the current intervals, because the sensor does not report them', async () => {
+  it('fills each row with the interval and priority measured on the bus, and says so', async () => {
     sensor()
     const el = await open()
 
-    expect(text(el.querySelector('#network'))).toContain(
-      'The sensor does not report its current intervals or priorities'
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('1.00')
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('3')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 1.00 s, priority 3')
+    expect(text(el.querySelector('#network'))).toContain('measured from what the sensor sends')
+  })
+
+  it('says a message the sensor does not send on its own is not sent periodically', async () => {
+    sensor()
+    const el = await open()
+
+    expect(intervalInput(pgnRow(el, 65409))?.value).toBe('')
+    expect(text(pgnRow(el, 65409))).toContain('Measured: not sent periodically')
+  })
+
+  it('offers Set only once a value differs from the measured one', async () => {
+    sensor()
+    const el = await open()
+    const row = pgnRow(el, 128267)
+
+    expect(button(row, 'Set').disabled).toBe(true)
+    expect(button(row, 'Set priority').disabled).toBe(true)
+
+    const input = intervalInput(row)
+    if (input === null) {
+      throw new Error('No interval input')
+    }
+    input.value = '0.5'
+    input.dispatchEvent(new Event('input'))
+    await settle()
+
+    expect(button(row, 'Set').disabled).toBe(false)
+  })
+
+  it('measures again after a write, and the row follows the new measurement', async () => {
+    let lists = 0
+    serve(
+      selected(),
+      (path, init) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && path === '/pgns') {
+          lists += 1
+          return json({
+            status: 'answered',
+            pgns: [
+              {
+                pgn: 128267,
+                minIntervalMs: 50,
+                telemetry: false,
+                observedIntervalMs: lists === 1 ? 1000 : 500,
+                observedPriority: 3
+              }
+            ]
+          } satisfies PgnListResult)
+        }
+        if (method === 'PUT') {
+          return json({ status: 'applied', observedIntervalMs: 500 } satisfies PgnWriteResult)
+        }
+        return json({ status: 'answered', value: true, readAt: READ_AT } satisfies ReadResult)
+      },
+      [OVERRIDE],
+      {},
+      null
     )
-    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('')
+    const el = await open()
+
+    await setInterval_(pgnRow(el, 128267), '0.5')
+    await settle()
+
+    expect(lists).toBe(2)
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('0.50')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 0.50 s')
   })
 
   it('lists messages sent only on request without controls', async () => {
@@ -222,7 +319,18 @@ describe('PGN intervals and priorities', () => {
 
   it('quotes the stricter minimum for a fast-packet PGN', async () => {
     sensor({
-      list: { status: 'answered', pgns: [{ pgn: 128275, minIntervalMs: 100, telemetry: false }] }
+      list: {
+        status: 'answered',
+        pgns: [
+          {
+            pgn: 128275,
+            minIntervalMs: 100,
+            telemetry: false,
+            observedIntervalMs: 1000,
+            observedPriority: 6
+          }
+        ]
+      }
     })
     const el = await open()
     const input = intervalInput(pgnRow(el, 128275))
@@ -337,7 +445,7 @@ describe('PGN intervals and priorities', () => {
     expect(text(section)).toContain('The sensor claimed its address again')
     // What was set before the restart no longer describes the sensor.
     expect(text(pgnRow(el, 128267))).not.toContain('Stored')
-    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('')
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('1.00')
   })
 
   it('keeps a restore’s outcome through the restart it causes', async () => {

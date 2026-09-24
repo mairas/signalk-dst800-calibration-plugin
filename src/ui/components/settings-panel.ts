@@ -250,6 +250,21 @@ export class SettingsPanel extends LightElement {
     this.pgnsError = failure
   }
 
+  /** Read what the sensor transmits again, as after a write changed an interval or priority. */
+  private async remeasure(): Promise<void> {
+    const key = this.selected
+    let list: PgnListResult
+    try {
+      list = await request<PgnListResult>('GET', '/pgns')
+    } catch {
+      // The row already says how the write went; the old measurement stays until the next read.
+      return
+    }
+    if (sameKey(this.selected, key)) {
+      this.pgns = list
+    }
+  }
+
   /** One restart at a time: a second would reach a sensor that is already rebooting. */
   private async restart(event: RestartRequest): Promise<void> {
     if (this.restarting !== null) {
@@ -504,6 +519,7 @@ export class SettingsPanel extends LightElement {
                   .restarting=${this.restarting}
                   .restarted=${this.restarted}
                   @restart=${(event: RestartRequest) => this.restart(event)}
+                  @remeasure=${() => this.remeasure()}
                 ></dst-pgns>`
               : nothing
           }
