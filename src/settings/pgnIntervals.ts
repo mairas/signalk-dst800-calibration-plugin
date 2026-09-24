@@ -15,6 +15,9 @@ import type { DecodedPgn } from '../protocol/messages.js'
 import { PGN, SINGLE_FRAME_PGNS, TRANSMIT_PGN_LIST } from '../protocol/pids.js'
 import type { DeviceSession } from '../session/deviceSession.js'
 import type { Outcome } from '../session/outcome.js'
+import { FRAMES_TO_OBSERVE, MAX_INTERVAL_MS, observationWindowMs } from './intervalLimits.js'
+
+export { MAX_INTERVAL_MS }
 
 /**
  * Airmar's periodic PGNs. PGN 126464 excludes proprietary PGNs (manual p.16),
@@ -29,7 +32,6 @@ export const TELEMETRY_PGNS: readonly number[] = [
 
 export const MIN_SINGLE_FRAME_INTERVAL_MS = 50
 const MIN_FAST_PACKET_INTERVAL_MS = 100
-export const MAX_INTERVAL_MS = 60_000
 export const MAX_PRIORITY = 7
 
 /**
@@ -39,10 +41,6 @@ export const MAX_PRIORITY = 7
  */
 const PERIOD_TOLERANCE = 0.25
 const MIN_TOLERANCE_MS = 30
-/** A frame may be scheduled on the old period; allow for it on top of three new ones. */
-const OBSERVATION_SLACK_MS = 5000
-/** The first frame after the write may still follow the old schedule, so time the next two. */
-const FRAMES_TO_OBSERVE = 3
 
 export interface PgnInfo {
   pgn: number
@@ -166,7 +164,7 @@ export async function writeInterval(
   if (outcome.status !== 'answered') {
     return notAnswered(outcome)
   }
-  const frames = await observe(context, pgn, FRAMES_TO_OBSERVE * input + OBSERVATION_SLACK_MS)
+  const frames = await observe(context, pgn, observationWindowMs(input))
   if (frames.length < FRAMES_TO_OBSERVE) {
     return withWarning(pgn, {
       status: 'unconfirmed',
