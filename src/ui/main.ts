@@ -30,6 +30,8 @@ export class DstApp extends LightElement {
 
   private loading: AbortController | null = null
   private events: { close: () => void } | null = null
+  /** Whether the selected sensor has had its one automatic probe. */
+  private autoProbed = false
 
   override connectedCallback(): void {
     super.connectedCallback()
@@ -88,8 +90,26 @@ export class DstApp extends LightElement {
     if (!sameKey(device.selected, this.device?.selected ?? null)) {
       this.simulating = null
       this.probeError = null
+      this.autoProbed = false
     }
     this.device = device
+  }
+
+  /**
+   * Probe a sensor that is on the bus and has none, so its settings read
+   * themselves. The plugin keeps probes in memory only, so a restart drops
+   * them. Once per selection: a refused or failed probe is not retried.
+   */
+  protected override updated(changed: Map<PropertyKey, unknown>): void {
+    const device = this.device
+    if (!changed.has('device') || device === null || this.probing || this.autoProbed) {
+      return
+    }
+    if (device.selected === null || device.location?.state !== 'present' || device.probe !== null) {
+      return
+    }
+    this.autoProbed = true
+    void this.probe()
   }
 
   private receive(event: ServerEvent): void {

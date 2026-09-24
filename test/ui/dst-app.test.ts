@@ -175,6 +175,57 @@ describe('dst-app', () => {
   })
 
   describe('probing', () => {
+    it('probes a sensor that is on the bus and has no probe yet, once', async () => {
+      const posts: string[] = []
+      serve(selected({ probe: null }), (path) => {
+        posts.push(path)
+        return json(probe)
+      })
+      const el = await mount()
+
+      expect(posts).toEqual(['/device/probe'])
+      expect(text(el)).toContain('1 of 2 capabilities answered')
+
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+      await settle()
+
+      expect(posts).toHaveLength(1)
+    })
+
+    it('waits until the sensor is heard before probing it', async () => {
+      const posts: string[] = []
+      serve(
+        selected({ probe: null, location: { state: 'waiting', address: 22 }, access: null }),
+        (path) => {
+          posts.push(path)
+          return json(probe)
+        }
+      )
+      await mount()
+
+      expect(posts).toEqual([])
+
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+      await settle()
+
+      expect(posts).toEqual(['/device/probe'])
+    })
+
+    it('does not keep probing after the server refused the first one', async () => {
+      const posts: string[] = []
+      serve(selected({ probe: null }), (path) => {
+        posts.push(path)
+        return new Response('', { status: 401, statusText: 'Unauthorized' })
+      })
+      const el = await mount()
+
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+      await settle()
+
+      expect(posts).toHaveLength(1)
+      expect(text(el)).toContain('admin login')
+    })
+
     it('probes on request and shows what the device answered', async () => {
       const requests: unknown[] = []
       serve(selected(), (path, init) => {
@@ -193,19 +244,22 @@ describe('dst-app', () => {
     it('drops a probe result that returns after another sensor was selected', async () => {
       let answer: (response: Response) => void = () => undefined
       serve(
-        selected(),
+        selected({ probe: null }),
         () =>
           new Promise((resolve) => {
             answer = resolve
           })
       )
       const el = await mount()
-      button(el, 'Probe').click()
-      await settle()
 
       FakeEventSource.latest.push({
         type: 'device',
-        data: selected({ selected: OTHER, location: { state: 'present', address: 35 } })
+        data: selected({
+          selected: OTHER,
+          location: { state: 'waiting', address: 35 },
+          access: null,
+          probe: null
+        })
       })
       answer(json(probe))
       await settle()

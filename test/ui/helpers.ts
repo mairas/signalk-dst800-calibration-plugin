@@ -75,11 +75,12 @@ export const probe: ProbeResult = {
   interrupted: false
 }
 
+/** The selected DST, present and already probed unless `overrides` says otherwise. */
 export const selected = (overrides: Partial<DeviceResponse> = {}): DeviceResponse => ({
   selected: DST,
   location: { state: 'present', address: 22 },
   access: { state: 'locked' },
-  probe: null,
+  probe,
   ...overrides
 })
 
