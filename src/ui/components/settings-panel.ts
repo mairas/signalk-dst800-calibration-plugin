@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js'
 import type {
   DeviceKey,
   DeviceResponse,
+  PgnListResult,
   ReadResult,
   SettingEvent,
   SettingInfo,
@@ -25,12 +26,19 @@ import {
 import { SI, unitFor, type DisplayUnit, type Units } from '../units.js'
 import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
+import './pgn-table.js'
 
 /** How often the read age moves on screen. */
 const TICK_MS = 5000
 
 /** Read with the rest, shown in the header rather than as a row. */
 const PRODUCT = 'productInformation'
+
+/** The section that holds the transmitted PGNs, below its settings. */
+const PGN_SECTION = 'network'
+
+/** Its setting that decides whether the intervals set per PGN apply. */
+const OVERRIDE = 'transmissionIntervalOverride'
 
 interface Slot {
   id: string
@@ -71,6 +79,8 @@ export class SettingsPanel extends LightElement {
   /** When the last full read finished. */
   @state() private readAt: number | null = null
   @state() private reading = false
+  @state() private pgns: PgnListResult | null = null
+  @state() private pgnsError: string | null = null
 
   private ticker: ReturnType<typeof setInterval> | null = null
   private probeSeen: string | null = null
@@ -110,6 +120,8 @@ export class SettingsPanel extends LightElement {
       this.readFor = null
       this.readAt = null
       this.probeSeen = null
+      this.pgns = null
+      this.pgnsError = null
     }
   }
 
@@ -176,6 +188,10 @@ export class SettingsPanel extends LightElement {
         }
         await this.read(slot)
       }
+      if (this.superseded(target, key)) {
+        return
+      }
+      await this.loadPgns()
       this.readAt = Date.now()
     } finally {
       if (this.readFor === target) {
@@ -187,6 +203,16 @@ export class SettingsPanel extends LightElement {
   /** Whether a read pass should stop: each read awaits, and the console can move on meanwhile. */
   private superseded(target: string, key: DeviceKey): boolean {
     return this.readFor !== target || this.readDenied || !sameKey(this.selected, key)
+  }
+
+  /** What the sensor transmits: its PGN 126464 list, which needs a request on the bus. */
+  private async loadPgns(): Promise<void> {
+    try {
+      this.pgns = await request<PgnListResult>('GET', '/pgns')
+      this.pgnsError = null
+    } catch (cause) {
+      this.pgnsError = describeFailure(cause)
+    }
   }
 
   private change(slot: Slot, edit: (row: RowState) => RowState): void {
@@ -269,6 +295,7 @@ export class SettingsPanel extends LightElement {
   /** The sensor was reset or restored: nothing read from it before still holds. */
   forget(): void {
     this.rows = new Map()
+    this.pgns = null
     this.readFor = null
     this.readAt = null
   }
@@ -344,13 +371,27 @@ export class SettingsPanel extends LightElement {
     const infos = (this.infos ?? []).filter(
       (info) => settings.includes(info.id) && info.available !== 'no'
     )
-    if (infos.length === 0) {
+    const pgns = id === PGN_SECTION && (this.pgns !== null || this.pgnsError !== null)
+    if (infos.length === 0 && !pgns) {
       return nothing
     }
+    const override = this.rows.get(`${OVERRIDE}:`)?.stored?.value
     return html`
       <section id=${id} class="card mb-3" aria-labelledby=${`${id}-title`}>
         <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
-        <div class="list-group list-group-flush">${infos.map((info) => this.rowsOf(info))}</div>
+        <div class="list-group list-group-flush">
+          ${infos.map((info) => this.rowsOf(info))}
+          ${
+            pgns
+              ? html`<dst-pgns
+                  .list=${this.pgns}
+                  .listError=${this.pgnsError}
+                  .override=${typeof override === 'boolean' ? override : null}
+                  .disabled=${!this.present}
+                ></dst-pgns>`
+              : nothing
+          }
+        </div>
       </section>
     `
   }
