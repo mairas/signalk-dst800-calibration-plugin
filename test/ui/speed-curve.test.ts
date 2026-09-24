@@ -1,7 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReadResult, SettingInfo, WriteResult } from '../../src/types.js'
 import '../../src/ui/main.js'
-import { FakeEventSource, button, json, mount, selected, serve, settle, text } from './helpers.js'
+import {
+  FakeEventSource,
+  OTHER,
+  button,
+  json,
+  mount,
+  selected,
+  serve,
+  settle,
+  text
+} from './helpers.js'
 
 const READ_AT = '2026-09-24T12:00:00.000Z'
 
@@ -446,6 +456,121 @@ describe('speed curve', () => {
       expect(cells(el)).toHaveLength(26)
       expect(text(curve(el))).toContain('A curve holds 1 to 25 points.')
       expect(button(curve(el), 'Save').disabled).toBe(true)
+    })
+
+    it('keeps blank and non-numeric cells as written, marked, with Save disabled', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0,0\n,3.00\n16,abc\n')
+
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['', '3.00'],
+        ['16.0', 'abc']
+      ])
+      expect(text(curve(el))).toContain('Point 2: enter a frequency.')
+      expect(text(curve(el))).toContain('Point 3: enter a speed.')
+      expect(button(curve(el), 'Save').disabled).toBe(true)
+    })
+
+    it('empties the table for a file with a header and no points, and says why it cannot be saved', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n')
+
+      expect(cells(el)).toHaveLength(0)
+      expect(text(curve(el))).toContain('A curve holds 1 to 25 points.')
+    })
+
+    it('says a file that matches the sensor’s curve changes nothing', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0.0,0.00\n5.0,2.00\n10.0,4.00\n')
+
+      expect(text(curve(el))).toContain('matches the curve the sensor holds')
+      expect(
+        [...curve(el).querySelectorAll('button')].map((b) => b.textContent.trim())
+      ).not.toContain('Save')
+    })
+
+    it('reads spreadsheet dialects: quotes, CR line endings, capitals and blank lines', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, '"Frequency_Hz";"Speed_KN"\r0;0\r8;3.00\r;\r;\r')
+
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['8.0', '3.00']
+      ])
+    })
+
+    it('keeps a fitting script’s decimals in the table’s own unit, so only the sensor rounds', async () => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0,0\n20,3.0049\n')
+
+      // At the table's 2 decimals, 3.00 kn would store 1.54 m/s, not the file's 1.55.
+      expect(values(el)[1]).toEqual(['20.0', '3.0049'])
+
+      button(curve(el), 'Save').click()
+      await settle()
+      expect(bodies).toEqual([
+        [
+          { hz: 0, speed: 0 },
+          { hz: 20, speed: expect.closeTo(3.0049 * 0.514444, 5) as number }
+        ]
+      ])
+    })
+
+    it('converts another unit with enough decimals that it does not round before the sensor', async () => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_m/s\n0,0\n20,1.5453\n')
+      button(curve(el), 'Save').click()
+      await settle()
+
+      expect(bodies).toEqual([
+        [
+          { hz: 0, speed: 0 },
+          { hz: 20, speed: expect.closeTo(1.5453, 4) as number }
+        ]
+      ])
+    })
+
+    it('forgets what an import said once it is cancelled', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0,0\n8,3.00\n')
+      button(curve(el), 'Cancel').click()
+      await settle()
+
+      expect(text(curve(el))).not.toContain('Imported')
+      expect(values(el)[1]).toEqual(['5.0', '2.00'])
+    })
+
+    it('drops an imported curve when another sensor is selected', async () => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0,0\n8,3.00\n')
+      FakeEventSource.latest.push({ type: 'device', data: selected({ selected: OTHER }) })
+      await settle()
+
+      expect(text(curve(el))).not.toContain('Imported')
+      expect(
+        [...curve(el).querySelectorAll('button')].map((b) => b.textContent.trim())
+      ).not.toContain('Save')
+      expect(bodies).toEqual([])
     })
 
     it.each([

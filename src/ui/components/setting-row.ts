@@ -1,13 +1,10 @@
 import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import type { DeviceKey } from '../../types.js'
-import { checkCurve, curveOf, formatHz, refusedAt, rowsOf, type CurveRow } from '../curve.js'
-import { curveToCsv, parseCurveCsv } from '../curve-csv.js'
-import { download } from '../download.js'
-import { dayOf, isRecord } from '../format.js'
+import { checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
+import { isRecord, sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
-  VIEWS,
   describeOutcome,
   describeValue,
   descriptionLines,
@@ -15,7 +12,8 @@ import {
   type Editor,
   type Outcome
 } from '../settings.js'
-import { SI, unitNamed, type DisplayUnit, type Units } from '../units.js'
+import type { DisplayUnit } from '../units.js'
+import './curve-csv.js'
 import './curve-editor.js'
 import type { RowsChange } from './curve-editor.js'
 
@@ -61,18 +59,16 @@ export class SettingRow extends LightElement {
   @property({ attribute: false }) row: RowState = EMPTY_ROW
   /** The sensor is not on the bus. */
   @property({ type: Boolean }) disabled = false
-  /** The server's unit preferences, for a curve file that names its own unit. */
-  @property({ attribute: false }) units: Units = SI
-  /** The sensor, for naming the files it exports. */
+  /** The sensor. An edit belongs to it, and its files are named for it. */
   @property({ attribute: false }) device: DeviceKey | null = null
+  /** The unit a curve file names, or null when the server knows no such unit. */
+  @property({ attribute: false }) resolveUnit: (name: string) => DisplayUnit | null = () => null
 
   /** What the user typed, per field; null while the control follows the sensor. */
   @state() private draft: string[] | null = null
   @state() private confirming = false
   @state() private understood = false
   @state() private storedNoticeGone = false
-  /** What the last curve export or import did. */
-  @state() private csvNote: { tone: string; text: string } | null = null
   private storedNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
   private get inputId(): string {
@@ -80,6 +76,13 @@ export class SettingRow extends LightElement {
   }
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    const device = changed.get('device') as DeviceKey | null | undefined
+    if (device !== undefined && !sameKey(device, this.device)) {
+      // An edit made for one sensor must not be saved to another.
+      this.draft = null
+      this.confirming = false
+      this.understood = false
+    }
     const previous = changed.get('row') as RowState | undefined
     if (previous === undefined || previous.outcome === this.row.outcome) {
       return
@@ -178,7 +181,7 @@ export class SettingRow extends LightElement {
       case 'description':
         return { description1: fields[0], description2: fields[1] }
       case 'curve':
-        return this.unit === null ? null : checkCurve(pairs(fields), this.unit).points
+        return this.curveCheck()?.points ?? null
       default:
         return null
     }
@@ -297,9 +300,15 @@ export class SettingRow extends LightElement {
     `
   }
 
+  /** The curve the table holds and its problems, checked once per use. */
+  private curveCheck(): ReturnType<typeof checkCurve> | null {
+    return this.unit === null ? null : checkCurve(pairs(this.fields), this.unit)
+  }
+
   private curveControl() {
     const rows = pairs(this.fields)
-    const problems = this.unit === null ? [] : checkCurve(rows, this.unit).problems
+    const check = this.curveCheck()
+    const problems = check?.problems ?? []
     const outcome = this.row.outcome
     const refused =
       this.dirty && outcome?.kind === 'refused'
@@ -330,101 +339,19 @@ export class SettingRow extends LightElement {
               ${problems.map((p) => html`<li>${p.text}</li>`)}
             </ul>`
       }
-      ${this.saveButtons()} ${this.csvControls(problems.length === 0 && rows.length > 0)}
-    `
-  }
-
-  private exportCsv(): void {
-    const points = this.unit === null ? null : checkCurve(pairs(this.fields), this.unit).points
-    if (points === null || this.unit === null) {
-      return
-    }
-    const unique = this.device === null ? 'sensor' : String(this.device.uniqueNumber)
-    const name = `dst-${unique}-curve-${dayOf(new Date().toISOString())}.csv`
-    download(name, curveToCsv(points, this.unit), 'text/csv')
-    this.csvNote = this.dirty
-      ? {
-          tone: 'warning',
-          text: `Exported ${name}: the edited curve, not saved to the sensor yet.`
-        }
-      : { tone: 'success', text: `Exported ${name}.` }
-  }
-
-  /** Put a file's points in the table, in the table's unit, as if typed; Save writes them. */
-  private async importCsv(event: Event): Promise<void> {
-    const input = event.target as HTMLInputElement
-    const file = input.files?.[0]
-    input.value = ''
-    const spec = VIEWS[this.settingId]?.unit
-    if (file === undefined || this.unit === null || spec === undefined) {
-      return
-    }
-    const parsed = parseCurveCsv(await file.text())
-    if (!parsed.ok) {
-      this.csvNote = { tone: 'danger', text: `${file.name} was not imported: ${parsed.reason}.` }
-      return
-    }
-    const unit = unitNamed(this.units, spec, parsed.unit)
-    if (unit === null) {
-      this.csvNote = {
-        tone: 'danger',
-        text: `${file.name} was not imported: ${parsed.unit} is not a speed unit the server knows.`
-      }
-      return
-    }
-    const shown = this.unit
-    this.draft = parsed.rows.flatMap(([hz, speed]) => {
-      const frequency = hz === '' ? NaN : Number(hz)
-      const si = unit.parse(speed)
-      return [
-        Number.isFinite(frequency) ? formatHz(frequency) : hz,
-        si === null ? speed : shown.format(si)
-      ]
-    })
-    this.csvNote = {
-      tone: 'secondary',
-      text: `Imported ${file.name}. Check the points, then Save to write them to the sensor.`
-    }
-  }
-
-  private csvControls(writable: boolean) {
-    return html`
-      <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-        <button
-          type="button"
-          class="btn btn-sm btn-outline-secondary"
-          ?disabled=${!writable}
-          @click=${() => {
-            this.exportCsv()
-          }}
-        >
-          Export CSV
-        </button>
-        <button
-          type="button"
-          class="btn btn-sm btn-outline-secondary"
-          ?disabled=${this.blocked}
-          @click=${() => {
-            this.querySelector<HTMLInputElement>('input[type="file"]')?.click()
-          }}
-        >
-          Import CSV…
-        </button>
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          hidden
-          ?disabled=${this.blocked}
-          @change=${(event: Event) => this.importCsv(event)}
-        />
-        ${
-          this.csvNote === null
-            ? nothing
-            : html`<span class=${`small text-${this.csvNote.tone}-emphasis`} role="status"
-                >${this.csvNote.text}</span
-              >`
-        }
-      </div>
+      ${this.saveButtons()}
+      <dst-curve-csv
+        .points=${check?.points ?? null}
+        .dirty=${this.dirty}
+        .stored=${this.row.stored === null ? null : pairs(stored)}
+        .speed=${this.unit}
+        .resolveUnit=${this.resolveUnit}
+        .device=${this.device}
+        ?disabled=${this.blocked}
+        @rows-change=${(event: RowsChange) => {
+          this.draft = event.detail.rows.flat()
+        }}
+      ></dst-curve-csv>
     `
   }
 

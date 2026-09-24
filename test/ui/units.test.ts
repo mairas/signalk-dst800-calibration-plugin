@@ -3,6 +3,7 @@ import {
   SI,
   loadUnits,
   unitFor,
+  unitNamed,
   type Definitions,
   type Preset,
   type Units
@@ -195,6 +196,39 @@ describe('units', () => {
       answer({})
 
       expect(await loadUnits()).toBe(SI)
+    })
+  })
+
+  describe('unitNamed', () => {
+    const units: Units = {
+      preset: { categories: {} },
+      definitions: {
+        'm/s': {
+          conversions: {
+            knot: { formula: 'value * 1.94384', inverseFormula: 'value * 0.514444', symbol: 'kn' },
+            'km/h': { formula: 'value * 3.6', inverseFormula: 'value / 3.6', symbol: 'km/h' }
+          }
+        }
+      }
+    }
+    const speed = { category: 'speed', resolution: 0.01 } as const
+
+    it.each([
+      ['a key', 'km/h', 'km/h'],
+      ['a symbol that is not the key', 'kn', 'kn'],
+      ['the base unit', 'm/s', 'm/s'],
+      ['any case', 'KM/H', 'km/h']
+    ])('finds %s', (_case, name, symbol) => {
+      expect(unitNamed(units, speed, name)?.symbol).toBe(symbol)
+    })
+
+    it('converts by the named unit', () => {
+      expect(unitNamed(units, speed, 'kn')?.parse('1')).toBeCloseTo(0.514444, 6)
+    })
+
+    it('knows no unit the server does not, and none for a fixed unit', () => {
+      expect(unitNamed(units, speed, 'furlongs')).toBeNull()
+      expect(unitNamed(units, { fixed: { symbol: 'm/s', decimals: 1 } }, 'm/s')).toBeNull()
     })
   })
 })

@@ -32,6 +32,7 @@ import {
   age,
   outcomeOf,
   slotKey,
+  unitNamedFor,
   unitOf,
   storedValueOf,
   type Outcome
@@ -422,8 +423,8 @@ export class SettingsPanel extends LightElement {
       .help=${help}
       .editor=${view.editor}
       .unit=${this.unitOf(info.id)}
-      .units=${this.units}
       .device=${this.selected}
+      .resolveUnit=${(name: string) => unitNamedFor(this.units, info.id, name)}
       .readable=${info.readable}
       .level1=${info.requiresLevel1}
       .row=${this.rows.get(slotKey(slot)) ?? EMPTY_ROW}

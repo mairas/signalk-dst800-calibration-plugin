@@ -20,19 +20,27 @@ export function curveToCsv(points: readonly CurvePoint[], speed: DisplayUnit): s
 export type CsvCurve =
   { ok: true; unit: string; rows: [hz: string, speed: string][] } | { ok: false; reason: string }
 
+/** A field without the double quotes some tools, R's write.csv among them, put around it. */
+const unquote = (field: string): string =>
+  field
+    .trim()
+    .replace(/^"(.*)"$/, '$1')
+    .trim()
+
 export function parseCurveCsv(text: string): CsvCurve {
+  // CRLF, LF, or CR alone as older Mac spreadsheets write.
   const lines = text
-    .split(/\r?\n/)
+    .split(/\r\n|\r|\n/)
     .map((line, index) => ({ line: line.trim(), number: index + 1 }))
     .filter(({ line }) => line !== '')
   const header = lines.at(0)?.line ?? ''
   // A spreadsheet in a locale with decimal commas separates values with semicolons.
   const separator = header.includes(';') ? ';' : ','
-  const columns = header.split(separator).map((c) => c.trim().toLowerCase())
+  const columns = header.split(separator).map(unquote)
   if (
     columns.length !== 2 ||
-    columns[0] !== FREQUENCY_COLUMN ||
-    !columns[1].startsWith(SPEED_PREFIX)
+    columns[0].toLowerCase() !== FREQUENCY_COLUMN ||
+    !columns[1].toLowerCase().startsWith(SPEED_PREFIX)
   ) {
     return {
       ok: false,
@@ -41,7 +49,11 @@ export function parseCurveCsv(text: string): CsvCurve {
   }
   const rows: [string, string][] = []
   for (const { line, number } of lines.slice(1)) {
-    const values = line.split(separator).map((v) => v.trim())
+    const values = line.split(separator).map(unquote)
+    // A spreadsheet writes bare separators for empty rows inside its used range.
+    if (values.every((v) => v === '')) {
+      continue
+    }
     if (values.length !== 2) {
       return {
         ok: false,
@@ -53,5 +65,5 @@ export function parseCurveCsv(text: string): CsvCurve {
     }
     rows.push([values[0], values[1]])
   }
-  return { ok: true, unit: header.split(separator)[1].trim().slice(SPEED_PREFIX.length), rows }
+  return { ok: true, unit: columns[1].slice(SPEED_PREFIX.length), rows }
 }
