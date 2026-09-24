@@ -6,15 +6,16 @@ import type {
   DeviceResponse,
   DevicesResponse,
   ProbeResult,
-  ServerEvent
+  ServerEvent,
+  WriteResult
 } from '../types.js'
 import { describeFailure, followEvents, request } from './api.js'
-import './components/device-picker.js'
-import './components/device-status.js'
+import './components/sensor-header.js'
 import './components/settings-panel.js'
 import { sameKey } from './format.js'
 import { LightElement } from './light-element.js'
-import { storedValueOf } from './settings.js'
+import { describeOutcome, outcomeOf, storedValueOf } from './settings.js'
+import { loadUnits, type Units } from './units.js'
 
 @customElement('dst-app')
 export class DstApp extends LightElement {
@@ -27,15 +28,28 @@ export class DstApp extends LightElement {
   @state() private selecting = false
   @state() private probing = false
   @state() private probeError: string | null = null
+  /**
+   * Null until the unit preferences have loaded or failed. The settings wait
+   * for them: a value shown in SI and then converted under an edit in
+   * progress would have the user's number read in the wrong unit.
+   */
+  @state() private units: Units | null = null
+  /** What went wrong with the warning's Turn off, shown in the warning itself. */
+  @state() private simulateError: string | null = null
+  /** The selected sensor's product information, read with its settings. */
+  @state() private product: unknown = null
 
   private loading: AbortController | null = null
   private events: { close: () => void } | null = null
-  /** Whether the selected sensor has had its one automatic probe. */
+  /** Whether the selected sensor has had its automatic probe since the stream last connected. */
   private autoProbed = false
 
   override connectedCallback(): void {
     super.connectedCallback()
     void this.load()
+    void loadUnits().then((units) => {
+      this.units = units
+    })
   }
 
   override disconnectedCallback(): void {
@@ -71,6 +85,11 @@ export class DstApp extends LightElement {
           this.receive(event)
         },
         onConnected: (connected) => {
+          // A stream that comes back was most likely dropped by a plugin
+          // restart, which forgets its probes: probe afresh if one is missing.
+          if (connected && this.streamLost) {
+            this.autoProbed = false
+          }
           this.streamLost = !connected
         }
       })
@@ -89,7 +108,9 @@ export class DstApp extends LightElement {
   private showDevice(device: DeviceResponse): void {
     if (!sameKey(device.selected, this.device?.selected ?? null)) {
       this.simulating = null
+      this.simulateError = null
       this.probeError = null
+      this.product = null
       this.autoProbed = false
     }
     this.device = device
@@ -102,7 +123,9 @@ export class DstApp extends LightElement {
    */
   protected override updated(changed: Map<PropertyKey, unknown>): void {
     const device = this.device
-    if (!changed.has('device') || device === null || this.probing || this.autoProbed) {
+    // After a probe too: a selection made while one ran was skipped above.
+    const relevant = changed.has('device') || changed.has('probing')
+    if (!relevant || device === null || this.probing || this.autoProbed) {
       return
     }
     if (device.selected === null || device.location?.state !== 'present' || device.probe !== null) {
@@ -124,6 +147,9 @@ export class DstApp extends LightElement {
         if (event.data.id === 'simulateMode') {
           const stored = storedValueOf(event.data.result)?.value
           this.simulating = typeof stored === 'boolean' ? stored : this.simulating
+          if (this.simulating === false) {
+            this.simulateError = null
+          }
         }
         this.querySelector('dst-settings')?.apply(event.data)
         break
@@ -162,6 +188,27 @@ export class DstApp extends LightElement {
     }
   }
 
+  /**
+   * The warning's Turn off. The warning stays until a read or write says the
+   * sensor stopped; anything but `applied` is shown in it, beside the button.
+   */
+  private async simulateOff(): Promise<void> {
+    this.simulateError = null
+    try {
+      const result = await request<WriteResult>('PUT', '/settings/simulateMode', { value: false })
+      const outcome = outcomeOf('write', result)
+      if (result.status !== 'applied' && outcome !== null) {
+        this.simulateError = describeOutcome(
+          outcome,
+          (value) => (value === true ? 'on' : 'off'),
+          storedValueOf(result)
+        ).text
+      }
+    } catch (cause) {
+      this.simulateError = describeFailure(cause)
+    }
+  }
+
   private selectedCandidate(): Candidate | null {
     const key = this.device?.selected ?? null
     return this.candidates.find((c) => sameKey(c.key, key)) ?? null
@@ -183,49 +230,43 @@ export class DstApp extends LightElement {
     if (this.device === null) {
       return html`<main class="container-fluid py-3"><p>Loading…</p></main>`
     }
-    const hasDevice = this.device.selected !== null
     return html`
-      <main class="container-fluid py-3">
-        <h1 class="h4 mb-3">Airmar DST configuration</h1>
+      <div class="dst-header">
+        <dst-sensor-header
+          .device=${this.device}
+          .candidate=${this.selectedCandidate()}
+          .candidates=${this.candidates}
+          .product=${this.product}
+          .simulating=${this.simulating}
+          .simulateError=${this.simulateError}
+          .probeError=${this.probeError}
+          .probing=${this.probing}
+          .selecting=${this.selecting}
+          @select=${(event: CustomEvent<DeviceKey>) => this.select(event.detail)}
+          @probe=${() => this.probe()}
+          @simulate-off=${() => this.simulateOff()}
+        ></dst-sensor-header>
         ${
-          this.simulating === true
-            ? html`<div class="alert alert-danger" role="alert">
-                <strong>Simulate mode is on.</strong> The sensor is sending simulated depth, speed
-                and temperature, and every device on the NMEA 2000 bus is receiving them as real,
-                autopilot and anchor alarm included.
+          this.streamLost
+            ? html`<div class="container-fluid small text-warning-emphasis pb-1">
+                Live updates lost, reconnecting…
               </div>`
             : nothing
         }
+      </div>
+      <main class="container-fluid py-3">
         ${
-          this.streamLost
-            ? html`<p class="text-warning-emphasis">Live updates lost, reconnecting…</p>`
-            : nothing
+          this.units === null
+            ? html`<p class="text-body-secondary">Loading unit preferences…</p>`
+            : html`<dst-settings
+                .device=${this.device}
+                .units=${this.units}
+                @probe=${() => this.probe()}
+                @product=${(event: CustomEvent<unknown>) => {
+                  this.product = event.detail
+                }}
+              ></dst-settings>`
         }
-        ${
-          hasDevice
-            ? html`<section class="mb-4" aria-label="Selected sensor">
-                  <dst-device-status
-                    .device=${this.device}
-                    .candidate=${this.selectedCandidate()}
-                    .probing=${this.probing}
-                    .probeError=${this.probeError}
-                    @probe=${() => this.probe()}
-                  ></dst-device-status>
-                </section>
-                <section class="mb-4" aria-label="Settings">
-                  <dst-settings .device=${this.device} @probe=${() => this.probe()}></dst-settings>
-                </section>`
-            : html`<p class="lead">Choose the sensor to configure.</p>`
-        }
-        <details ?open=${!hasDevice}>
-          <summary class="mb-2">${hasDevice ? 'Change sensor' : 'Devices on the bus'}</summary>
-          <dst-device-picker
-            .candidates=${this.candidates}
-            .selected=${this.device.selected}
-            .busy=${this.selecting}
-            @select=${(event: CustomEvent<DeviceKey>) => this.select(event.detail)}
-          ></dst-device-picker>
-        </details>
       </main>
     `
   }

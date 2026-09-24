@@ -93,9 +93,19 @@ export type Handler = (path: string, init?: RequestInit) => Response | Promise<R
  * Answer the plugin API: GET /devices, /device and /settings from the
  * arguments, and anything else through `other`.
  */
-export function serve(device: DeviceResponse, other?: Handler, settings: SettingInfo[] = []): void {
+export function serve(
+  device: DeviceResponse,
+  other?: Handler,
+  settings: SettingInfo[] = [],
+  /** The server's own API by URL, such as its unit preferences; anything else is 404. */
+  server: Record<string, unknown> = {}
+): void {
   vi.mocked(fetch).mockImplementation((input, init) => {
-    const path = (input as string).slice(API_BASE.length)
+    const url = input as string
+    if (!url.startsWith(API_BASE)) {
+      return Promise.resolve(url in server ? json(server[url]) : new Response('', { status: 404 }))
+    }
+    const path = url.slice(API_BASE.length)
     const method = init?.method ?? 'GET'
     if (method === 'GET' && path === '/devices') {
       return Promise.resolve(json({ candidates } satisfies DevicesResponse))

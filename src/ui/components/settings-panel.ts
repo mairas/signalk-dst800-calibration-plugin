@@ -12,12 +12,24 @@ import type {
 import { ApiError, describeFailure, request } from '../api.js'
 import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
-import { VIEWS, storedValueOf } from '../settings.js'
+import {
+  SECTIONS,
+  TEMPERATURE_SOURCES,
+  VIEWS,
+  age,
+  outcomeOf,
+  storedValueOf,
+  type Outcome
+} from '../settings.js'
+import { SI, unitFor, type DisplayUnit, type Units } from '../units.js'
 import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
 
-/** How often ages move on screen. */
+/** How often the read age moves on screen. */
 const TICK_MS = 5000
+
+/** Read with the rest, shown in the header rather than as a row. */
+const PRODUCT = 'productInformation'
 
 interface Slot {
   id: string
@@ -37,16 +49,17 @@ const isLoginRefusal = (cause: unknown): boolean =>
   cause instanceof ApiError && (cause.status === 401 || cause.status === 403)
 
 /**
- * The selected sensor's settings, one row per setting and qualifier.
+ * The selected sensor's settings, one card per section.
  *
  * Reads every offered, readable setting once the sensor is present and
  * probed, one at a time, and again after each probe. A capability the probe
- * rejected has no row; one it got no answer for gets a placeholder that
- * offers another probe. Fires `probe` for that.
+ * rejected has no row; one it got no answer for offers Check again, which
+ * fires `probe`. The product information read with the rest fires `product`.
  */
 @customElement('dst-settings')
 export class SettingsPanel extends LightElement {
   @property({ attribute: false }) device: DeviceResponse | null = null
+  @property({ attribute: false }) units: Units = SI
 
   @state() private infos: SettingInfo[] | null = null
   @state() private rows = new Map<string, RowState>()
@@ -54,6 +67,9 @@ export class SettingsPanel extends LightElement {
   /** The server wants an admin login for reads; asking again would only be refused again. */
   @state() private readDenied = false
   @state() private now = Date.now()
+  /** When the last full read finished. */
+  @state() private readAt: number | null = null
+  @state() private reading = false
 
   private ticker: ReturnType<typeof setInterval> | null = null
   private probeSeen: string | null = null
@@ -91,6 +107,7 @@ export class SettingsPanel extends LightElement {
       this.rows = new Map()
       this.readDenied = false
       this.readFor = null
+      this.readAt = null
       this.probeSeen = null
     }
   }
@@ -101,6 +118,11 @@ export class SettingsPanel extends LightElement {
       return
     }
     const probe = JSON.stringify(this.device?.probe ?? null)
+    if ((this.device?.probe ?? null) === null) {
+      // The plugin dropped its probe, as a restart does: what was read under
+      // it is no longer known to be current, so the next probe reads afresh.
+      this.readFor = null
+    }
     if (probe !== this.probeSeen) {
       this.probeSeen = probe
       void this.loadList()
@@ -124,27 +146,40 @@ export class SettingsPanel extends LightElement {
   /** The slots to read: offered, readable, and shown by this console. */
   private readable(): Slot[] {
     return (this.infos ?? [])
-      .filter((info) => info.available === 'yes' && info.readable && VIEWS[info.id] !== undefined)
+      .filter(
+        (info) =>
+          info.available === 'yes' &&
+          info.readable &&
+          (VIEWS[info.id] !== undefined || info.id === PRODUCT)
+      )
       .flatMap(slotsOf)
   }
 
-  /** Read every offered setting once per sensor and probe, one at a time. */
-  private async readAll(): Promise<void> {
+  /** Read every offered setting, one at a time: once per sensor and probe, or on request. */
+  private async readAll(force = false): Promise<void> {
     const key = this.selected
     const probe = this.device?.probe ?? null
     if (key === null || probe === null || !this.present || this.infos === null || this.readDenied) {
       return
     }
-    const target = JSON.stringify([key, probe])
-    if (target === this.readFor) {
+    const target = JSON.stringify([key, probe, force ? Date.now() : 0])
+    if (!force && target === this.readFor) {
       return
     }
     this.readFor = target
-    for (const slot of this.readable()) {
-      if (this.superseded(target, key)) {
-        return
+    this.reading = true
+    try {
+      for (const slot of this.readable()) {
+        if (this.superseded(target, key)) {
+          return
+        }
+        await this.read(slot)
       }
-      await this.read(slot)
+      this.readAt = Date.now()
+    } finally {
+      if (this.readFor === target) {
+        this.reading = false
+      }
     }
   }
 
@@ -160,32 +195,59 @@ export class SettingsPanel extends LightElement {
     this.rows = rows
   }
 
-  private settle(slot: Slot, operation: 'read' | 'write', result: ReadResult | WriteResult): void {
+  private settle(slot: Slot, outcome: Outcome | null, result: ReadResult | WriteResult): void {
+    const stored = storedValueOf(result)
     this.change(slot, (row) => ({
-      stored: storedValueOf(result) ?? row.stored,
-      last: { operation, result },
+      stored: stored ?? row.stored,
+      outcome,
       busy: null
     }))
+    if (slot.id === PRODUCT && stored !== null) {
+      this.dispatchEvent(new CustomEvent('product', { detail: stored.value, bubbles: true }))
+    }
   }
 
-  private async read(slot: Slot): Promise<void> {
+  private async read(slot: Slot): Promise<ReadResult> {
     this.change(slot, (row) => ({ ...row, busy: 'read' }))
+    let result: ReadResult
     try {
-      this.settle(slot, 'read', await request<ReadResult>('GET', pathOf(slot)))
+      result = await request<ReadResult>('GET', pathOf(slot))
     } catch (cause) {
       this.readDenied ||= isLoginRefusal(cause)
-      this.settle(slot, 'read', { status: 'invalid', reason: describeFailure(cause) })
+      result = { status: 'invalid', reason: describeFailure(cause) }
     }
+    this.settle(slot, outcomeOf('read', result), result)
+    return result
   }
 
   private async write(slot: Slot, value: unknown): Promise<void> {
     this.change(slot, (row) => ({ ...row, busy: 'write' }))
     const body = slot.qualifier === null ? { value } : { value, qualifier: slot.qualifier }
+    let result: WriteResult
     try {
-      this.settle(slot, 'write', await request<WriteResult>('PUT', `/settings/${slot.id}`, body))
+      result = await request<WriteResult>('PUT', `/settings/${slot.id}`, body)
     } catch (cause) {
-      this.settle(slot, 'write', { status: 'invalid', reason: describeFailure(cause) })
+      result = { status: 'invalid', reason: describeFailure(cause) }
     }
+    if (result.status !== 'unknown') {
+      this.settle(slot, outcomeOf('write', result), result)
+      return
+    }
+    // Silence says nothing about whether the value arrived; the sensor's
+    // current value does.
+    this.change(slot, (row) => ({ ...row, outcome: { kind: 'checking' } }))
+    const readBack = await this.read(slot)
+    const stored = storedValueOf(readBack)
+    const unit = this.unitOf(slot.id)
+    const same =
+      stored !== null &&
+      (typeof value === 'number' && typeof stored.value === 'number' && unit !== null
+        ? unit.format(value) === unit.format(stored.value)
+        : JSON.stringify(value) === JSON.stringify(stored.value))
+    this.change(slot, (row) => ({
+      ...row,
+      outcome: same ? { kind: 'holdsRequested' } : { kind: 'noAnswer', operation: 'write' }
+    }))
   }
 
   /** A read or write that reached the sensor, from this console or another. */
@@ -193,7 +255,7 @@ export class SettingsPanel extends LightElement {
     const slot = { id: event.id, qualifier: event.qualifier }
     // A request of this console's own settles its row when its answer arrives.
     if ((this.rows.get(slotKey(slot))?.busy ?? null) === null) {
-      this.settle(slot, event.operation, event.result)
+      this.settle(slot, outcomeOf(event.operation, event.result), event.result)
     }
   }
 
@@ -201,25 +263,57 @@ export class SettingsPanel extends LightElement {
   forget(): void {
     this.rows = new Map()
     this.readFor = null
+    this.readAt = null
+  }
+
+  private unitOf(id: string): DisplayUnit | null {
+    const spec = VIEWS[id]?.unit
+    return spec === undefined ? null : unitFor(this.units, spec)
   }
 
   private placeholder(info: SettingInfo, label: string) {
     return html`
       <div class="list-group-item" data-slot=${`${info.id}:`}>
-        <span class="fw-semibold">${label}</span>
-        <span class="text-body-secondary">
-          The sensor did not answer when probed for this, so it may still support it.
-        </span>
-        <button
-          type="button"
-          class="btn btn-sm btn-outline-secondary ms-2"
-          ?disabled=${!this.present}
-          @click=${() => this.dispatchEvent(new CustomEvent('probe', { bubbles: true }))}
-        >
-          Probe again
-        </button>
+        <div class="row g-2 align-items-center">
+          <div class="col-md-5 fw-semibold">${label}</div>
+          <div class="col-md-7">
+            <span class="text-body-secondary me-2"
+              >The sensor didn’t answer when checked for this.</span
+            >
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              ?disabled=${!this.present}
+              @click=${() => this.dispatchEvent(new CustomEvent('probe', { bubbles: true }))}
+            >
+              Check again
+            </button>
+          </div>
+        </div>
       </div>
     `
+  }
+
+  private row(info: SettingInfo, slot: Slot, label: string, help: string) {
+    const view = VIEWS[info.id]
+    if (view === undefined) {
+      return nothing
+    }
+    return html`<dst-setting-row
+      class="list-group-item d-block"
+      data-slot=${slotKey(slot)}
+      .settingId=${info.id}
+      .label=${label}
+      .help=${help}
+      .editor=${view.editor}
+      .unit=${this.unitOf(info.id)}
+      .readable=${info.readable}
+      .level1=${info.requiresLevel1}
+      .row=${this.rows.get(slotKey(slot)) ?? EMPTY_ROW}
+      .disabled=${!this.present}
+      @read=${() => this.read(slot)}
+      @write=${(event: WriteRequest) => this.write(slot, event.detail.value)}
+    ></dst-setting-row>`
   }
 
   private rowsOf(info: SettingInfo) {
@@ -230,24 +324,56 @@ export class SettingsPanel extends LightElement {
     if (info.available === 'unknown') {
       return this.placeholder(info, view.label)
     }
-    return slotsOf(info).map((slot) => {
-      const qualifier = info.qualifiers?.find((q) => q.value === slot.qualifier)
-      const label =
-        qualifier === undefined ? view.label : `${view.label}, ${qualifier.label.toLowerCase()}`
-      return html`<dst-setting-row
-        class="list-group-item d-block"
-        data-slot=${slotKey(slot)}
-        .settingId=${info.id}
-        .label=${label}
-        .view=${view}
-        .readable=${info.readable}
-        .row=${this.rows.get(slotKey(slot)) ?? EMPTY_ROW}
-        .disabled=${!this.present}
-        .now=${this.now}
-        @read=${() => this.read(slot)}
-        @write=${(event: WriteRequest) => this.write(slot, event.detail.value)}
-      ></dst-setting-row>`
-    })
+    if (info.id === 'temperatureOffset') {
+      const offered = new Set(info.qualifiers?.map((q) => q.value) ?? [])
+      return TEMPERATURE_SOURCES.filter((source) => offered.has(source.qualifier)).map((source) =>
+        this.row(info, { id: info.id, qualifier: source.qualifier }, source.label, source.help)
+      )
+    }
+    return this.row(info, { id: info.id, qualifier: null }, view.label, view.help ?? '')
+  }
+
+  private section(id: string, title: string, settings: readonly string[]) {
+    const infos = (this.infos ?? []).filter(
+      (info) => settings.includes(info.id) && info.available !== 'no'
+    )
+    if (infos.length === 0) {
+      return nothing
+    }
+    return html`
+      <section id=${id} class="card mb-3" aria-labelledby=${`${id}-title`}>
+        <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
+        <div class="list-group list-group-flush">${infos.map((info) => this.rowsOf(info))}</div>
+      </section>
+    `
+  }
+
+  private readLine() {
+    if (this.readDenied) {
+      return html`<p class="text-warning-emphasis">
+        Reading values from the sensor needs an admin login to the Signal K server.
+      </p>`
+    }
+    if (this.reading && this.readAt === null) {
+      return html`<p class="text-body-secondary">
+        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        Reading settings from the sensor…
+      </p>`
+    }
+    if (this.readAt === null) {
+      return nothing
+    }
+    return html`<p class="text-body-secondary text-end small mb-2">
+      Read from the sensor ${age(this.readAt, this.now)} ·
+      <button
+        type="button"
+        class="btn btn-link btn-sm p-0 align-baseline"
+        ?disabled=${this.reading || !this.present}
+        @click=${() => this.readAll(true)}
+      >
+        ${this.reading ? 'Reading…' : 'Read again'}
+      </button>
+    </p>`
   }
 
   override render() {
@@ -255,31 +381,20 @@ export class SettingsPanel extends LightElement {
       return nothing
     }
     if ((this.device?.probe ?? null) === null) {
-      return html`<p class="text-body-secondary">Probe the sensor to see its settings.</p>`
+      return html`<p class="text-body-secondary">
+        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        Checking what the sensor supports…
+      </p>`
     }
     if (this.loadError !== null) {
       return html`<div class="alert alert-danger">Cannot list the settings: ${this.loadError}</div>`
     }
     if (this.infos === null) {
-      return html`<p>Loading settings…</p>`
+      return html`<p class="text-body-secondary">Loading settings…</p>`
     }
     return html`
-      <h2 class="h5">Settings</h2>
-      ${
-        this.present
-          ? nothing
-          : html`<p class="text-warning-emphasis">
-              The sensor is not on the bus. The values below are from its last read.
-            </p>`
-      }
-      ${
-        this.readDenied
-          ? html`<p class="text-warning-emphasis">
-              Reading values from the sensor needs an admin login to the Signal K server.
-            </p>`
-          : nothing
-      }
-      <div class="list-group">${this.infos.map((info) => this.rowsOf(info))}</div>
+      ${this.readLine()}
+      ${SECTIONS.map((section) => this.section(section.id, section.title, section.settings))}
     `
   }
 }

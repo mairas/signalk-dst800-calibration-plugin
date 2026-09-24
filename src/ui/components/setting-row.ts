@@ -1,233 +1,527 @@
-import { html, nothing } from 'lit'
+import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
-import type { ReadResult, WriteResult } from '../../types.js'
 import { LightElement } from '../light-element.js'
-import { age, describeOutcome, formatValue, type SettingView } from '../settings.js'
+import { describeOutcome, type Editor, type Outcome } from '../settings.js'
+import type { DisplayUnit } from '../units.js'
 
 /** What the console knows about one setting of the selected sensor. */
 export interface RowState {
   /** The last value the device reported, and when. */
   stored: { value: unknown; readAt: string } | null
-  /** The last read or write, from this console or another. */
-  last: { operation: 'read' | 'write'; result: ReadResult | WriteResult } | null
+  outcome: Outcome | null
   busy: 'read' | 'write' | null
 }
 
-export const EMPTY_ROW: RowState = { stored: null, last: null, busy: null }
+export const EMPTY_ROW: RowState = { stored: null, outcome: null, busy: null }
 
-/** Sent when the user asks to write `value`. */
+/** Sent when the user saves `value`, in SI units. */
 export type WriteRequest = CustomEvent<{ value: unknown }>
+
+/** How long "Stored." stays before the row goes quiet again. */
+const STORED_NOTICE_MS = 4000
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
+const descriptionLines = (value: unknown): [string, string] => {
+  const record = isRecord(value) ? value : {}
+  const line = (key: string) => (typeof record[key] === 'string' ? record[key] : '')
+  return [line('description1'), line('description2')]
+}
+
 /**
- * One setting: its label, the device's value with its age, the outcome of the
- * last operation, and an editor for its kind.
+ * One setting: its label and help, and its value as an editable control.
  *
+ * The control shows the sensor's value until the user changes it. Editing
+ * marks it dirty and offers Save and Cancel beside the sensor's own value.
  * Fires `read` and `write` (a `WriteRequest`); the panel talks to the plugin.
  */
 @customElement('dst-setting-row')
 export class SettingRow extends LightElement {
   @property() settingId = ''
   @property() label = ''
-  @property({ attribute: false }) view: SettingView | null = null
+  @property() help = ''
+  @property({ attribute: false }) editor: Editor = { kind: 'number' }
+  @property({ attribute: false }) unit: DisplayUnit | null = null
   @property({ type: Boolean }) readable = true
+  @property({ type: Boolean }) level1 = false
   @property({ attribute: false }) row: RowState = EMPTY_ROW
-  /** The sensor is not on the bus, or the user may not act. */
+  /** The sensor is not on the bus. */
   @property({ type: Boolean }) disabled = false
-  /** `Date.now()` of the panel's last tick, so ages move without a request. */
-  @property({ type: Number }) now = 0
 
-  @state() private draft: string[] = []
-  @state() private filterType: 0 | 1 = 1
-  @state() private choice: boolean | null = null
+  /** What the user typed, per field; null while the control follows the sensor. */
+  @state() private draft: string[] | null = null
   @state() private confirming = false
+  @state() private understood = false
+  @state() private storedNoticeGone = false
+  private storedNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
-  private emitRead(): void {
-    this.dispatchEvent(new CustomEvent('read', { bubbles: true }))
+  private get inputId(): string {
+    return `setting-${this.settingId}-${this.label.replace(/\W+/g, '-')}`
   }
 
-  private emitWrite(value: unknown): void {
-    this.confirming = false
-    this.dispatchEvent(new CustomEvent('write', { detail: { value }, bubbles: true }))
+  protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    const previous = changed.get('row') as RowState | undefined
+    if (previous === undefined || previous.outcome === this.row.outcome) {
+      return
+    }
+    const kind = this.row.outcome?.kind
+    // The sensor now holds what it holds; show that, not the attempt.
+    if (
+      kind === 'stored' ||
+      kind === 'holdsRequested' ||
+      kind === 'differs' ||
+      kind === 'accepted'
+    ) {
+      this.draft = null
+      this.confirming = false
+      this.understood = false
+    }
+    this.storedNoticeGone = false
+    if (this.storedNoticeTimer !== null) {
+      clearTimeout(this.storedNoticeTimer)
+    }
+    if (kind === 'stored') {
+      this.storedNoticeTimer = setTimeout(() => {
+        this.storedNoticeGone = true
+      }, STORED_NOTICE_MS)
+    }
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback()
+    if (this.storedNoticeTimer !== null) {
+      clearTimeout(this.storedNoticeTimer)
+    }
+  }
+
+  /** The sensor's value as the control's text, per field. */
+  private storedFields(): string[] {
+    const value = this.row.stored?.value
+    switch (this.editor.kind) {
+      case 'number':
+        return [typeof value === 'number' && this.unit !== null ? this.unit.format(value) : '']
+      case 'choice':
+        return [typeof value === 'boolean' ? String(value) : '']
+      case 'description':
+        return descriptionLines(value)
+      default:
+        return []
+    }
+  }
+
+  private get fields(): string[] {
+    return this.draft ?? this.storedFields()
+  }
+
+  private get dirty(): boolean {
+    const stored = this.storedFields()
+    return this.draft?.some((field, i) => field !== stored[i]) ?? false
   }
 
   private get blocked(): boolean {
     return this.disabled || this.row.busy !== null
   }
 
-  private input(index: number, event: Event): void {
-    const next = [...this.draft]
-    next[index] = (event.target as HTMLInputElement).value
+  private edit(index: number, text: string): void {
+    const next = [...this.fields]
+    next[index] = text
     this.draft = next
   }
 
-  private numberEditor(unit: string, step: number) {
-    const text = this.draft[0] ?? ''
-    const value = Number(text)
-    const usable = text.trim() !== '' && Number.isFinite(value)
+  private cancel(): void {
+    this.draft = null
+  }
+
+  private emitWrite(value: unknown): void {
+    this.dispatchEvent(new CustomEvent('write', { detail: { value }, bubbles: true }))
+  }
+
+  private emitRead(): void {
+    this.dispatchEvent(new CustomEvent('read', { bubbles: true }))
+  }
+
+  /** The value to write for the current fields, or null while they cannot be written. */
+  private pending(): unknown {
+    const fields = this.fields
+    switch (this.editor.kind) {
+      case 'number':
+        return this.unit?.parse(fields[0]) ?? null
+      case 'choice':
+        return fields[0] === 'true'
+      case 'description':
+        return { description1: fields[0], description2: fields[1] }
+      default:
+        return null
+    }
+  }
+
+  private save(): void {
+    const value = this.pending()
+    if (this.dirty && value !== null && !this.blocked) {
+      this.emitWrite(value)
+    }
+  }
+
+  private keys(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      this.save()
+    } else if (event.key === 'Escape') {
+      this.cancel()
+    }
+  }
+
+  /** A value as the user reads it, in a sentence. */
+  private show(value: unknown): string {
+    if (typeof value === 'number' && this.unit !== null) {
+      return `${this.unit.format(value)} ${this.unit.symbol}`
+    }
+    if (this.editor.kind === 'choice') {
+      return this.editor.options.find((o) => o.value === value)?.label ?? String(value)
+    }
+    if (this.editor.kind === 'simulate') {
+      return value === true ? 'on' : 'off'
+    }
+    if (this.editor.kind === 'description') {
+      return `“${descriptionLines(value)
+        .filter((line) => line !== '')
+        .join(' / ')}”`
+    }
+    return JSON.stringify(value)
+  }
+
+  private saveButtons() {
+    if (!this.dirty && this.row.busy !== 'write') {
+      return nothing
+    }
+    const writable = this.pending() !== null
     return html`
-      <div class="input-group input-group-sm">
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+        <button
+          type="button"
+          class="btn btn-sm btn-primary"
+          ?disabled=${this.blocked || !writable}
+          @click=${() => {
+            this.save()
+          }}
+        >
+          ${
+            this.row.busy === 'write'
+              ? html`<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+                  Saving…`
+              : 'Save'
+          }
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm btn-link"
+          ?disabled=${this.row.busy === 'write'}
+          @click=${() => {
+            this.cancel()
+          }}
+        >
+          Cancel
+        </button>
+        ${
+          this.row.stored === null || this.outcomeStatesValue()
+            ? nothing
+            : html`<span class="small text-body-secondary"
+                >Sensor has ${this.show(this.row.stored.value)}</span
+              >`
+        }
+        ${writable ? nothing : html`<span class="small text-danger-emphasis">Enter a number.</span>`}
+      </div>
+    `
+  }
+
+  /** The outcome message already names the sensor's value. */
+  private outcomeStatesValue(): boolean {
+    const outcome = this.row.outcome
+    return (
+      outcome?.kind === 'refused' ||
+      outcome?.kind === 'holdsRequested' ||
+      (outcome?.kind === 'noAnswer' && outcome.operation === 'write')
+    )
+  }
+
+  private inputClass(): string {
+    const failed = ['refused', 'notSent', 'invalid'].includes(this.row.outcome?.kind ?? '')
+    return [
+      'form-control',
+      this.dirty ? 'border-primary' : '',
+      this.dirty && failed ? 'is-invalid' : ''
+    ].join(' ')
+  }
+
+  private numberControl() {
+    return html`
+      <div class="input-group dst-value-input">
         <input
-          type="number"
-          class="form-control"
-          step=${String(step)}
-          aria-label=${this.label}
-          .value=${text}
+          id=${this.inputId}
+          type="text"
+          inputmode="decimal"
+          class=${this.inputClass()}
+          .value=${this.fields[0] ?? ''}
+          placeholder=${this.row.stored === null ? '—' : ''}
+          ?readonly=${this.row.busy === 'write'}
+          ?disabled=${this.disabled}
           @input=${(event: Event) => {
-            this.input(0, event)
+            this.edit(0, (event.target as HTMLInputElement).value)
+          }}
+          @keydown=${(event: KeyboardEvent) => {
+            this.keys(event)
           }}
         />
-        <span class="input-group-text">${unit}</span>
-        <button
-          type="button"
-          class="btn btn-outline-primary"
-          ?disabled=${this.blocked || !usable}
-          @click=${() => {
-            this.emitWrite(value)
-          }}
-        >
-          Write
-        </button>
+        <span class="input-group-text">${this.unit?.symbol ?? ''}</span>
       </div>
+      ${this.saveButtons()}
     `
   }
 
-  private descriptionEditor() {
-    const stored = isRecord(this.row.stored?.value) ? this.row.stored.value : {}
-    const line = (index: number, key: 'description1' | 'description2') =>
-      this.draft[index] ?? (typeof stored[key] === 'string' ? stored[key] : '')
+  private choiceControl(options: readonly { value: boolean; label: string }[]) {
     return html`
-      <div class="d-flex flex-column gap-1">
-        ${(['description1', 'description2'] as const).map(
-          (key, index) =>
-            html`<input
-              type="text"
-              class="form-control form-control-sm"
-              maxlength="70"
-              aria-label=${`${this.label}, line ${String(index + 1)}`}
-              .value=${line(index, key)}
-              @input=${(event: Event) => {
-                this.input(index, event)
-              }}
-            />`
+      <select
+        id=${this.inputId}
+        class=${`${this.inputClass().replace('form-control', 'form-select')} dst-value-input`}
+        ?disabled=${this.disabled || this.row.busy === 'write'}
+        @change=${(event: Event) => {
+          this.edit(0, (event.target as HTMLSelectElement).value)
+        }}
+      >
+        ${this.row.stored === null ? html`<option value="" selected>—</option>` : nothing}
+        ${options.map(
+          (o) =>
+            html`<option value=${String(o.value)} ?selected=${this.fields[0] === String(o.value)}>
+              ${o.label}
+            </option>`
         )}
-        <button
-          type="button"
-          class="btn btn-sm btn-outline-primary align-self-start"
-          ?disabled=${this.blocked}
-          @click=${() => {
-            this.emitWrite({
-              description1: line(0, 'description1'),
-              description2: line(1, 'description2')
-            })
-          }}
-        >
-          Write
-        </button>
-      </div>
+      </select>
+      ${this.saveButtons()}
     `
   }
 
-  private filterEditor() {
-    const [interval = '', duration = ''] = this.draft
-    const iir = this.filterType === 1
+  private descriptionControl() {
+    return html`
+      ${[0, 1].map(
+        (index) => html`
+          <div class="input-group input-group-sm mb-1">
+            <label class="input-group-text" for=${`${this.inputId}-${String(index)}`}
+              >Line ${index + 1}</label
+            >
+            <input
+              id=${`${this.inputId}-${String(index)}`}
+              type="text"
+              maxlength="70"
+              class=${this.inputClass()}
+              .value=${this.fields[index] ?? ''}
+              ?readonly=${this.row.busy === 'write'}
+              ?disabled=${this.disabled}
+              @input=${(event: Event) => {
+                this.edit(index, (event.target as HTMLInputElement).value)
+              }}
+              @keydown=${(event: KeyboardEvent) => {
+                this.keys(event)
+              }}
+            />
+          </div>
+        `
+      )}
+      ${this.saveButtons()}
+    `
+  }
+
+  private filterControl() {
+    const [type = '1', interval = '', duration = ''] = this.draft ?? []
+    const iir = type === '1'
     const both = interval.trim() !== '' && duration.trim() !== ''
-    const value: Record<string, number> = { type: this.filterType }
+    const neither = interval.trim() === '' && duration.trim() === ''
+    const value: Record<string, number> = { type: iir ? 1 : 0 }
     if (iir && both) {
       value.sampleInterval = Number(interval)
       value.filterDuration = Number(duration)
     }
+    const set = (index: number, text: string) => {
+      const next = [type, interval, duration]
+      next[index] = text
+      this.draft = next
+    }
+    const times = [
+      ['Sample interval', 1, interval],
+      ['Duration', 2, duration]
+    ] as const
     return html`
-      <div class="d-flex flex-wrap gap-1 align-items-center">
-        <select
-          class="form-select form-select-sm w-auto"
-          aria-label=${`${this.label} type`}
-          @change=${(event: Event) => {
-            this.filterType = (event.target as HTMLSelectElement).value === '0' ? 0 : 1
-          }}
-        >
-          <option value="1" ?selected=${iir}>IIR filter</option>
-          <option value="0" ?selected=${!iir}>No filter</option>
-        </select>
+      <div class="row g-2 align-items-end">
+        <div class="col-auto">
+          <label class="form-label small mb-1" for=${`${this.inputId}-type`}>Type</label>
+          <select
+            id=${`${this.inputId}-type`}
+            class="form-select form-select-sm"
+            ?disabled=${this.blocked}
+            @change=${(event: Event) => {
+              set(0, (event.target as HTMLSelectElement).value)
+            }}
+          >
+            <option value="1" ?selected=${iir}>IIR filter</option>
+            <option value="0" ?selected=${!iir}>No filter</option>
+          </select>
+        </div>
         ${
           iir
-            ? html`
-                <input
-                  type="number"
-                  class="form-control form-control-sm w-auto"
-                  step="0.01"
-                  placeholder="sample interval, s"
-                  aria-label=${`${this.label} sample interval`}
-                  .value=${interval}
-                  @input=${(event: Event) => {
-                    this.input(0, event)
-                  }}
-                />
-                <input
-                  type="number"
-                  class="form-control form-control-sm w-auto"
-                  step="0.01"
-                  placeholder="duration, s"
-                  aria-label=${`${this.label} filter duration`}
-                  .value=${duration}
-                  @input=${(event: Event) => {
-                    this.input(1, event)
-                  }}
-                />
-              `
+            ? times.map(
+                ([label, index, text]) => html`
+                  <div class="col">
+                    <label class="form-label small mb-1" for=${`${this.inputId}-${String(index)}`}
+                      >${label}</label
+                    >
+                    <div class="input-group input-group-sm">
+                      <input
+                        id=${`${this.inputId}-${String(index)}`}
+                        type="text"
+                        inputmode="decimal"
+                        class="form-control"
+                        .value=${text}
+                        ?disabled=${this.blocked}
+                        @input=${(event: Event) => {
+                          set(index, (event.target as HTMLInputElement).value)
+                        }}
+                      />
+                      <span class="input-group-text">s</span>
+                    </div>
+                  </div>
+                `
+              )
             : nothing
         }
-        <button
-          type="button"
-          class="btn btn-sm btn-outline-primary"
-          ?disabled=${this.blocked || (iir && (interval !== '' || duration !== '') && !both)}
-          @click=${() => {
-            this.emitWrite(value)
-          }}
-        >
-          Write
-        </button>
+        <div class="col-auto">
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            ?disabled=${this.blocked || (iir && !both && !neither)}
+            @click=${() => {
+              this.emitWrite(value)
+            }}
+          >
+            ${this.row.busy === 'write' ? 'Writing…' : 'Write'}
+          </button>
+        </div>
+      </div>
+      <div class="form-text">
+        The sensor cannot report this setting back.
+        ${iir && neither ? 'Leave both times empty to keep the ones stored.' : ''}
       </div>
     `
   }
 
-  private simulateEditor() {
+  private tripControl() {
+    const log = isRecord(this.row.stored?.value) ? this.row.stored.value : null
+    const distance = (metres: unknown) =>
+      typeof metres === 'number' && this.unit !== null
+        ? `${this.unit.format(metres)} ${this.unit.symbol}`
+        : '—'
+    return html`
+      <div class="d-flex flex-wrap align-items-center gap-3">
+        <span
+          ><span class="fw-semibold">${distance(log?.tripLog)}</span>
+          <span class="text-body-secondary">· total ${distance(log?.log)}</span></span
+        >
+        ${
+          this.confirming
+            ? nothing
+            : html`<button
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                ?disabled=${this.blocked}
+                @click=${() => {
+                  this.confirming = true
+                }}
+              >
+                Reset trip…
+              </button>`
+        }
+      </div>
+      ${
+        this.confirming
+          ? html`<div class="mt-2">
+              <span class="me-2">Set the trip to zero? The total is not affected.</span>
+              <button
+                type="button"
+                class="btn btn-sm btn-primary"
+                ?disabled=${this.blocked}
+                @click=${() => {
+                  this.emitWrite({ tripLog: 0 })
+                }}
+              >
+                Reset trip
+              </button>
+              <button
+                type="button"
+                class="btn btn-sm btn-link"
+                @click=${() => {
+                  this.confirming = false
+                }}
+              >
+                Cancel
+              </button>
+            </div>`
+          : nothing
+      }
+    `
+  }
+
+  private simulateControl() {
     if (this.row.stored?.value === true) {
-      return html`<button
-        type="button"
-        class="btn btn-sm btn-outline-danger"
-        ?disabled=${this.blocked}
-        @click=${() => {
-          this.emitWrite(false)
-        }}
-      >
-        Turn off
-      </button>`
+      return html`<div class="d-flex align-items-center gap-3">
+        <span class="badge text-bg-danger">On</span>
+        <button
+          type="button"
+          class="btn btn-sm btn-danger"
+          ?disabled=${this.blocked}
+          @click=${() => {
+            this.emitWrite(false)
+          }}
+        >
+          Turn off simulate mode
+        </button>
+      </div>`
     }
     if (!this.confirming) {
-      return html`<button
-        type="button"
-        class="btn btn-sm btn-outline-danger"
-        ?disabled=${this.blocked}
-        @click=${() => {
-          this.confirming = true
-        }}
-      >
-        Turn on…
-      </button>`
+      return html`<div class="d-flex align-items-center gap-3">
+        <span class="text-body-secondary">${this.row.stored === null ? '—' : 'Off'}</span>
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-danger"
+          ?disabled=${this.blocked}
+          @click=${() => {
+            this.confirming = true
+          }}
+        >
+          Turn on simulate mode…
+        </button>
+      </div>`
     }
     return html`
-      <div class="alert alert-danger py-2 mb-0">
-        <p class="mb-2">
-          Autopilots, depth alarms and anchor alarms will act on simulated values until you turn it
-          off or the sensor loses power.
+      <div class="bg-danger-subtle border border-danger-subtle rounded p-3">
+        <p class="mb-2 text-danger-emphasis">
+          Every device on the network, autopilot and anchor alarm included, will receive simulated
+          depth, speed and temperature as real, until you turn it off or the sensor loses power.
         </p>
+        <div class="form-check mb-2">
+          <input
+            id=${`${this.inputId}-understood`}
+            class="form-check-input"
+            type="checkbox"
+            .checked=${this.understood}
+            @change=${(event: Event) => {
+              this.understood = (event.target as HTMLInputElement).checked
+            }}
+          />
+          <label class="form-check-label" for=${`${this.inputId}-understood`}>I understand</label>
+        </div>
         <button
           type="button"
           class="btn btn-sm btn-danger me-2"
-          ?disabled=${this.blocked}
+          ?disabled=${this.blocked || !this.understood}
           @click=${() => {
             this.emitWrite(true)
           }}
@@ -236,9 +530,10 @@ export class SettingRow extends LightElement {
         </button>
         <button
           type="button"
-          class="btn btn-sm btn-outline-secondary"
+          class="btn btn-sm btn-link"
           @click=${() => {
             this.confirming = false
+            this.understood = false
           }}
         >
           Cancel
@@ -247,121 +542,82 @@ export class SettingRow extends LightElement {
     `
   }
 
-  private editor() {
-    const editor = this.view?.editor
-    switch (editor?.kind) {
+  private control() {
+    switch (this.editor.kind) {
       case 'number':
-        return this.numberEditor(editor.unit, editor.step)
-      case 'choice': {
-        const current = typeof this.row.stored?.value === 'boolean' ? this.row.stored.value : null
-        const chosen = this.choice ?? current ?? editor.options[0].value
-        return html`
-          <div class="input-group input-group-sm">
-            <select
-              class="form-select"
-              aria-label=${this.label}
-              @change=${(event: Event) => {
-                this.choice = (event.target as HTMLSelectElement).value === 'true'
-              }}
-            >
-              ${editor.options.map(
-                (o) =>
-                  html`<option value=${String(o.value)} ?selected=${o.value === chosen}>
-                    ${o.label}
-                  </option>`
-              )}
-            </select>
-            <button
-              type="button"
-              class="btn btn-outline-primary"
-              ?disabled=${this.blocked}
-              @click=${() => {
-                this.emitWrite(chosen)
-              }}
-            >
-              Write
-            </button>
-          </div>
-        `
-      }
-      case 'simulate':
-        return this.simulateEditor()
+        return this.numberControl()
+      case 'choice':
+        return this.choiceControl(this.editor.options)
       case 'description':
-        return this.descriptionEditor()
+        return this.descriptionControl()
       case 'filter':
-        return this.filterEditor()
+        return this.filterControl()
       case 'tripReset':
-        return html`<button
-          type="button"
-          class="btn btn-sm btn-outline-primary"
-          ?disabled=${this.blocked}
-          @click=${() => {
-            this.emitWrite({ tripLog: 0 })
-          }}
-        >
-          Reset trip
-        </button>`
-      default:
-        return nothing
+        return this.tripControl()
+      case 'simulate':
+        return this.simulateControl()
     }
   }
 
-  private valueCell() {
-    if (!this.readable) {
-      return html`<span class="text-body-secondary"
-        >The device cannot report this value back.</span
-      >`
-    }
-    const stored = this.row.stored
-    return html`
-      ${
-        stored === null
-          ? html`<span class="text-body-secondary">Not read yet</span>`
-          : html`<span class="fw-semibold">${formatValue(this.settingId, stored.value)}</span>
-              <span class="small text-body-secondary">read ${age(stored.readAt, this.now)}</span>`
-      }
+  private readAgain(text: string, tone: string): TemplateResult {
+    return html`<div class="small mt-1 text-${tone}-emphasis" role="status">
+      ${text}
       <button
         type="button"
-        class="btn btn-link btn-sm p-0 ms-2 align-baseline"
+        class="btn btn-link btn-sm p-0 align-baseline"
         ?disabled=${this.blocked}
         @click=${() => {
           this.emitRead()
         }}
       >
-        Read
+        Read again
       </button>
-    `
+    </div>`
   }
 
-  private statusLine() {
-    if (this.row.busy !== null) {
-      return html`<div class="small text-body-secondary mt-1">
-        ${this.row.busy === 'read' ? 'Reading…' : 'Writing…'}
-      </div>`
+  /** The line under the control: what the last operation did, in the sensor's terms. */
+  private status() {
+    if (this.row.busy === 'read') {
+      return html`<div class="small mt-1 text-body-secondary" role="status">Reading…</div>`
     }
-    const last = this.row.last
-    const outcome =
-      last === null ? null : describeOutcome(this.settingId, last.operation, last.result)
-    return outcome === null
-      ? nothing
-      : html`<div class="small mt-1 text-${outcome.tone}-emphasis">${outcome.text}</div>`
+    const outcome = this.row.outcome
+    if (outcome === null) {
+      return this.readable && this.row.stored === null && !this.disabled
+        ? this.readAgain('Not read yet.', 'secondary')
+        : nothing
+    }
+    if (outcome.kind === 'stored' && this.storedNoticeGone) {
+      return nothing
+    }
+    const { tone, text } = describeOutcome(outcome, (value) => this.show(value), this.row.stored)
+    const retry =
+      outcome.kind === 'unconfirmed' ||
+      outcome.kind === 'readRefused' ||
+      outcome.kind === 'notRead' ||
+      (outcome.kind === 'noAnswer' && outcome.operation === 'read')
+    return retry
+      ? this.readAgain(text, tone)
+      : html`<div class="small mt-1 text-${tone}-emphasis" role="status">${text}</div>`
   }
 
   override render() {
     return html`
-      <div class="row g-2 align-items-center">
-        <div class="col-md-4">
-          <div class="fw-semibold">${this.label}</div>
+      <div class="row g-2">
+        <div class="col-md-5">
+          <label class="fw-semibold" for=${this.inputId}>${this.label}</label>
           ${
-            this.view?.help === undefined
-              ? nothing
-              : html`<div class="small text-body-secondary">${this.view.help}</div>`
+            this.level1
+              ? html`<span
+                  class="badge bg-secondary-subtle text-secondary-emphasis ms-1"
+                  title="Saving this needs Level 1 access, which the console asks for itself."
+                  >Level 1</span
+                >`
+              : nothing
           }
+          ${this.help === '' ? nothing : html`<div class="form-text mt-0">${this.help}</div>`}
         </div>
-        <div class="col-md-4">${this.valueCell()}</div>
-        <div class="col-md-4">${this.editor()}</div>
+        <div class="col-md-7">${this.control()} ${this.status()}</div>
       </div>
-      ${this.statusLine()}
     `
   }
 }
