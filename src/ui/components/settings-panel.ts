@@ -4,6 +4,7 @@ import type {
   DeviceKey,
   DeviceResponse,
   PgnListResult,
+  ResetResult,
   ReadResult,
   SettingEvent,
   SettingInfo,
@@ -27,6 +28,7 @@ import { SI, unitFor, type DisplayUnit, type Units } from '../units.js'
 import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
 import './pgn-table.js'
+import type { RestoreRequest } from './pgn-table.js'
 
 /** How often the read age moves on screen. */
 const TICK_MS = 5000
@@ -81,6 +83,9 @@ export class SettingsPanel extends LightElement {
   @state() private reading = false
   @state() private pgns: PgnListResult | null = null
   @state() private pgnsError: string | null = null
+  /** A restore of default intervals or priorities, which restarts the sensor and outlives the table. */
+  @state() private restoring = false
+  @state() private restored: ResetResult | null = null
 
   private ticker: ReturnType<typeof setInterval> | null = null
   private probeSeen: string | null = null
@@ -122,6 +127,7 @@ export class SettingsPanel extends LightElement {
       this.probeSeen = null
       this.pgns = null
       this.pgnsError = null
+      this.restored = null
     }
   }
 
@@ -191,7 +197,7 @@ export class SettingsPanel extends LightElement {
       if (this.superseded(target, key)) {
         return
       }
-      await this.loadPgns()
+      await this.loadPgns(target, key)
       this.readAt = Date.now()
     } finally {
       if (this.readFor === target) {
@@ -206,12 +212,36 @@ export class SettingsPanel extends LightElement {
   }
 
   /** What the sensor transmits: its PGN 126464 list, which needs a request on the bus. */
-  private async loadPgns(): Promise<void> {
+  private async loadPgns(target: string, key: DeviceKey): Promise<void> {
+    let list: PgnListResult | null = null
+    let failure: string | null = null
     try {
-      this.pgns = await request<PgnListResult>('GET', '/pgns')
-      this.pgnsError = null
+      list = await request<PgnListResult>('GET', '/pgns')
     } catch (cause) {
-      this.pgnsError = describeFailure(cause)
+      failure = describeFailure(cause)
+    }
+    if (this.superseded(target, key)) {
+      return
+    }
+    this.pgns = list
+    this.pgnsError = failure
+  }
+
+  private async restore(event: RestoreRequest): Promise<void> {
+    const key = this.selected
+    this.restoring = true
+    this.restored = null
+    let result: ResetResult
+    try {
+      result = await request<ResetResult>('POST', '/device/restore', {
+        option: event.detail.option
+      })
+    } catch (cause) {
+      result = { status: 'notSent', reason: describeFailure(cause) }
+    }
+    this.restoring = false
+    if (sameKey(this.selected, key)) {
+      this.restored = result
     }
   }
 
@@ -371,7 +401,9 @@ export class SettingsPanel extends LightElement {
     const infos = (this.infos ?? []).filter(
       (info) => settings.includes(info.id) && info.available !== 'no'
     )
-    const pgns = id === PGN_SECTION && (this.pgns !== null || this.pgnsError !== null)
+    const pgns =
+      id === PGN_SECTION &&
+      (this.pgns !== null || this.pgnsError !== null || this.restoring || this.restored !== null)
     if (infos.length === 0 && !pgns) {
       return nothing
     }
@@ -388,6 +420,9 @@ export class SettingsPanel extends LightElement {
                   .listError=${this.pgnsError}
                   .override=${typeof override === 'boolean' ? override : null}
                   .disabled=${!this.present}
+                  .restoring=${this.restoring}
+                  .restored=${this.restored}
+                  @restore=${(event: RestoreRequest) => this.restore(event)}
                 ></dst-pgns>`
               : nothing
           }

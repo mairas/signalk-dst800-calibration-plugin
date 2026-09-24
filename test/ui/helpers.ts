@@ -100,8 +100,8 @@ export function serve(
   settings: SettingInfo[] = [],
   /** The server's own API by URL, such as its unit preferences; anything else is 404. */
   server: Record<string, unknown> = {},
-  /** What the sensor transmits; nothing by default. */
-  pgns: PgnListResult = { status: 'answered', pgns: [] }
+  /** What the sensor transmits; nothing by default, and null passes GET /pgns to `other`. */
+  pgns: PgnListResult | null = { status: 'answered', pgns: [] }
 ): void {
   vi.mocked(fetch).mockImplementation((input, init) => {
     const url = input as string
@@ -119,7 +119,7 @@ export function serve(
     if (method === 'GET' && path === '/settings') {
       return Promise.resolve(json({ settings } satisfies SettingsResponse))
     }
-    if (method === 'GET' && path === '/pgns') {
+    if (method === 'GET' && path === '/pgns' && pgns !== null) {
       return Promise.resolve(json(pgns))
     }
     if (other !== undefined) {

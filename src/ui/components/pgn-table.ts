@@ -26,7 +26,10 @@ interface PgnState {
 
 const EMPTY: PgnState = { interval: '', priority: '', busy: null, outcome: null }
 
-type Restore = 'updateRates' | 'priorities'
+export type Restore = 'updateRates' | 'priorities'
+
+/** Sent when the user confirms restoring `option`; the panel owns the request. */
+export type RestoreRequest = CustomEvent<{ option: Restore }>
 
 const RESTORES: Record<Restore, { label: string; what: string }> = {
   updateRates: { label: 'Restore default intervals…', what: 'every message’s default interval' },
@@ -50,6 +53,10 @@ function describeRestore(result: ResetResult): { tone: string; text: string } {
  *
  * The sensor does not report either, so the controls start empty and each
  * row says what the last write did. A PGN sent only on request has no row.
+ *
+ * A restore restarts the sensor, and the panel replaces this element while
+ * the sensor is away, so the panel sends it (`restore`) and passes back
+ * `restoring` and `restored`.
  */
 @customElement('dst-pgns')
 export class PgnTable extends LightElement {
@@ -58,11 +65,18 @@ export class PgnTable extends LightElement {
   /** The per-message interval setting: false while the sensor ignores the intervals set here. */
   @property({ attribute: false }) override: boolean | null = null
   @property({ type: Boolean }) disabled = false
+  @property({ type: Boolean }) restoring = false
+  @property({ attribute: false }) restored: ResetResult | null = null
 
   @state() private pgns = new Map<number, PgnState>()
   @state() private confirming: Restore | null = null
-  @state() private restoring = false
-  @state() private restored: { tone: string; text: string } | null = null
+
+  protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    if (changed.has('restored') && this.restored?.status === 'claimed') {
+      // Whatever was set here before, the sensor now holds its defaults.
+      this.pgns = new Map()
+    }
+  }
 
   private stateOf(pgn: number): PgnState {
     return this.pgns.get(pgn) ?? EMPTY
@@ -87,21 +101,9 @@ export class PgnTable extends LightElement {
     this.change(pgn, { busy: null, outcome: describePgnWrite(result, what) })
   }
 
-  private async restore(option: Restore): Promise<void> {
-    this.restoring = true
-    let result: ResetResult
-    try {
-      result = await request<ResetResult>('POST', '/device/restore', { option })
-    } catch (cause) {
-      result = { status: 'notSent', reason: describeFailure(cause) }
-    }
-    this.restoring = false
+  private restore(option: Restore): void {
     this.confirming = null
-    this.restored = describeRestore(result)
-    if (result.status === 'claimed') {
-      // Whatever was set here before, the sensor now holds its defaults.
-      this.pgns = new Map()
-    }
+    this.dispatchEvent(new CustomEvent('restore', { detail: { option }, bubbles: true }))
   }
 
   private row(info: PgnInfo) {
@@ -219,9 +221,23 @@ export class PgnTable extends LightElement {
         </div>`
   }
 
+  private restoreStatus() {
+    if (this.restoring) {
+      return html`<span class="small text-body-secondary" role="status">
+        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        Restoring. The sensor is restarting…
+      </span>`
+    }
+    if (this.restored === null) {
+      return nothing
+    }
+    const { tone, text } = describeRestore(this.restored)
+    return html`<span class="small text-${tone}-emphasis" role="status">${text}</span>`
+  }
+
   private restoreControls() {
     const confirming = this.confirming
-    if (confirming !== null) {
+    if (confirming !== null && !this.restoring) {
       return html`<div class="bg-warning-subtle border border-warning-subtle rounded p-3">
         <p class="mb-2">
           This puts back ${RESTORES[confirming].what}. The sensor restarts to apply this, and keeps
@@ -230,15 +246,16 @@ export class PgnTable extends LightElement {
         <button
           type="button"
           class="btn btn-sm btn-warning me-2"
-          ?disabled=${this.disabled || this.restoring}
-          @click=${() => this.restore(confirming)}
+          ?disabled=${this.disabled}
+          @click=${() => {
+            this.restore(confirming)
+          }}
         >
-          ${this.restoring ? 'Restoring…' : 'Restore and restart'}
+          Restore and restart
         </button>
         <button
           type="button"
           class="btn btn-sm btn-link"
-          ?disabled=${this.restoring}
           @click=${() => {
             this.confirming = null
           }}
@@ -253,22 +270,15 @@ export class PgnTable extends LightElement {
           html`<button
             type="button"
             class="btn btn-sm btn-outline-secondary"
-            ?disabled=${this.disabled}
+            ?disabled=${this.disabled || this.restoring}
             @click=${() => {
               this.confirming = option
-              this.restored = null
             }}
           >
             ${RESTORES[option].label}
           </button>`
       )}
-      ${
-        this.restored === null
-          ? nothing
-          : html`<span class="small text-${this.restored.tone}-emphasis" role="status"
-              >${this.restored.text}</span
-            >`
-      }
+      ${this.restoreStatus()}
     </div>`
   }
 
@@ -280,7 +290,10 @@ export class PgnTable extends LightElement {
     }
     const list = this.list
     if (list === null) {
-      return nothing
+      // The sensor is restarting or being read again; a restore still says how it went.
+      return this.restoring || this.restored !== null
+        ? html`<div class="list-group-item">${this.restoreStatus()}</div>`
+        : nothing
     }
     if (list.status !== 'answered') {
       return html`<div class="list-group-item text-warning-emphasis">

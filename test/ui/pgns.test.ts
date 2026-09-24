@@ -1,7 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { PgnListResult, PgnWriteResult, ReadResult, SettingInfo } from '../../src/types.js'
 import '../../src/ui/main.js'
-import { FakeEventSource, button, json, mount, selected, serve, settle, text } from './helpers.js'
+import {
+  FakeEventSource,
+  OTHER,
+  button,
+  probe,
+  json,
+  mount,
+  selected,
+  serve,
+  settle,
+  text
+} from './helpers.js'
 
 const READ_AT = '2026-09-24T12:00:00.000Z'
 
@@ -65,7 +76,7 @@ function sensor(
         )
       }
       if (method === 'POST' && path === '/device/restore') {
-        return json(options.onRestore?.() ?? { status: 'claimed', probe: selected().probe })
+        return json((await options.onRestore?.()) ?? { status: 'claimed', probe: selected().probe })
       }
       throw new Error(`Unexpected ${method} ${path}`)
     },
@@ -327,6 +338,115 @@ describe('PGN intervals and priorities', () => {
     // What was set before the restart no longer describes the sensor.
     expect(text(pgnRow(el, 128267))).not.toContain('Stored')
     expect(intervalInput(pgnRow(el, 128267))?.value).toBe('')
+  })
+
+  it('keeps a restore’s outcome through the restart it causes', async () => {
+    let answer: (result: unknown) => void = () => undefined
+    sensor({
+      onRestore: () =>
+        new Promise((resolve) => {
+          answer = resolve
+        })
+    })
+    const el = await open()
+    const section = () => el.querySelector('#network') ?? el
+
+    button(section(), 'Restore default intervals…').click()
+    await settle()
+    button(section(), 'Restore and restart').click()
+    await settle()
+
+    // The plugin follows the sensor through its restart: probe gone, then reset.
+    FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+    await settle()
+    FakeEventSource.latest.push({
+      type: 'reset',
+      data: { status: 'claimed', probe }
+    })
+    FakeEventSource.latest.push({ type: 'device', data: selected() })
+    await settle()
+    answer({ status: 'claimed', probe })
+    await settle()
+
+    expect(text(section())).toContain('Restored. The sensor restarted.')
+  })
+
+  it('says how a restore went while the list is still being read again', async () => {
+    let lists = 0
+    let answer: () => void = () => undefined
+    serve(
+      selected(),
+      (path, init) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'GET' && path === '/pgns') {
+          lists += 1
+          // The first list loads; the one after the restart is still on its way.
+          return lists === 1 ? json(LIST) : new Promise<Response>(() => undefined)
+        }
+        if (method === 'POST') {
+          return new Promise<Response>((resolve) => {
+            answer = () => {
+              resolve(json({ status: 'claimed', probe }))
+            }
+          })
+        }
+        return json({ status: 'answered', value: true, readAt: READ_AT } satisfies ReadResult)
+      },
+      [OVERRIDE],
+      {},
+      null
+    )
+    const el = await open()
+    const section = () => el.querySelector('#network') ?? el
+
+    button(section(), 'Restore default priorities…').click()
+    await settle()
+    button(section(), 'Restore and restart').click()
+    await settle()
+    FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+    FakeEventSource.latest.push({ type: 'reset', data: { status: 'claimed', probe } })
+    FakeEventSource.latest.push({ type: 'device', data: selected() })
+    await settle()
+
+    expect(text(section())).toContain('The sensor is restarting')
+
+    answer()
+    await settle()
+
+    expect(el.querySelector('[data-pgn]')).toBeNull()
+    expect(text(section())).toContain('Restored. The sensor restarted.')
+  })
+
+  it('drops a PGN list that arrives after another sensor was selected', async () => {
+    let answerFirst: (list: PgnListResult) => void = () => undefined
+    let calls = 0
+    serve(
+      selected(),
+      (path, init) => {
+        if ((init?.method ?? 'GET') === 'GET' && path === '/pgns') {
+          calls += 1
+          return calls === 1
+            ? new Promise<Response>((resolve) => {
+                answerFirst = (list) => {
+                  resolve(json(list))
+                }
+              })
+            : json({ status: 'answered', pgns: [] } satisfies PgnListResult)
+        }
+        return json({ status: 'answered', value: true, readAt: READ_AT } satisfies ReadResult)
+      },
+      [OVERRIDE],
+      {},
+      null
+    )
+    const el = await open()
+
+    FakeEventSource.latest.push({ type: 'device', data: selected({ selected: OTHER }) })
+    await settle()
+    answerFirst(LIST)
+    await settle()
+
+    expect(el.querySelector('[data-pgn]')).toBeNull()
   })
 
   it('says why the list could not be read', async () => {
