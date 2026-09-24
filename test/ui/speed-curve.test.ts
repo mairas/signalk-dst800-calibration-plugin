@@ -312,4 +312,159 @@ describe('speed curve', () => {
     ).toBe(true)
     expect(button(curve(el), 'Add point').disabled).toBe(true)
   })
+  describe('as CSV', () => {
+    /** Capture the files the page saves, as the browser's download would. */
+    const downloads = () => {
+      const saved: { name: string; blob: Blob }[] = []
+      let blob: Blob | null = null
+      vi.stubGlobal('URL', {
+        ...URL,
+        createObjectURL: (b: Blob) => {
+          blob = b
+          return 'blob:curve'
+        },
+        revokeObjectURL: () => undefined
+      })
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+        this: HTMLAnchorElement
+      ) {
+        if (blob !== null) {
+          saved.push({ name: this.download, blob })
+        }
+      })
+      return saved
+    }
+
+    /** Choose `content` as the CSV to import, as the browser's file picker would. */
+    const importCsv = async (el: Element, content: string) => {
+      const input = curve(el).querySelector<HTMLInputElement>('input[type="file"]')
+      if (input === null) {
+        throw new Error('No file input')
+      }
+      Object.defineProperty(input, 'files', {
+        value: [new File([content], 'curve.csv', { type: 'text/csv' })],
+        configurable: true
+      })
+      input.dispatchEvent(new Event('change'))
+      await settle()
+      await settle()
+    }
+
+    it('exports the curve with its unit in the header, named for the sensor and the day', async () => {
+      const saved = downloads()
+      curveDevice()
+      const el = await open()
+
+      button(curve(el), 'Export CSV').click()
+      await settle()
+
+      expect(saved.map((s) => s.name)).toEqual(['dst-123456-curve-2026-09-24.csv'])
+      expect(await saved[0].blob.text()).toBe(
+        'frequency_hz,speed_kn\n0.0,0.00\n5.0,2.00\n10.0,4.00\n'
+      )
+    })
+
+    it('exports unsaved edits, and says they are not on the sensor yet', async () => {
+      const saved = downloads()
+      curveDevice()
+      const el = await open()
+
+      await type(cells(el)[2][1], '5.00')
+      button(curve(el), 'Export CSV').click()
+      await settle()
+
+      expect(await saved[0].blob.text()).toContain('10.0,5.00\n')
+      expect(text(curve(el))).toContain('not saved to the sensor')
+    })
+
+    it('does not export a table with problems', async () => {
+      curveDevice()
+      const el = await open()
+
+      await type(cells(el)[2][0], '4')
+
+      expect(button(curve(el), 'Export CSV').disabled).toBe(true)
+    })
+
+    it('imports a file into the table as an unsaved edit, and Save writes it in SI', async () => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0,0\n8,3.00\n16,6.00\n')
+
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['8.0', '3.00'],
+        ['16.0', '6.00']
+      ])
+      expect(bodies).toEqual([])
+
+      button(curve(el), 'Save').click()
+      await settle()
+
+      expect(bodies).toEqual([
+        [
+          { hz: 0, speed: 0 },
+          { hz: 8, speed: expect.closeTo(1.543, 3) as number },
+          { hz: 16, speed: expect.closeTo(3.087, 3) as number }
+        ]
+      ])
+    })
+
+    it('converts a file in m/s into the table’s knots', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_m/s\n0,0\n10,2.06\n')
+
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['10.0', '4.00']
+      ])
+    })
+
+    it('accepts semicolons between the values', async () => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz;speed_kn\r\n0;0\r\n8;3.00\r\n')
+
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['8.0', '3.00']
+      ])
+    })
+
+    it('puts a file the sensor would refuse in the table, marked, with Save disabled', async () => {
+      curveDevice()
+      const el = await open()
+      const rows = Array.from({ length: 26 }, (_, i) => `${String(i)},${String(i / 10)}`)
+
+      await importCsv(el, `frequency_hz,speed_kn\n${rows.join('\n')}\n`)
+
+      expect(cells(el)).toHaveLength(26)
+      expect(text(curve(el))).toContain('A curve holds 1 to 25 points.')
+      expect(button(curve(el), 'Save').disabled).toBe(true)
+    })
+
+    it.each([
+      ['no header', '0,0\n8,3\n', 'The first line must name the columns'],
+      ['an unknown unit', 'frequency_hz,speed_furlongs\n0,0\n', 'furlongs is not a speed unit'],
+      ['decimal commas', 'frequency_hz;speed_kn\n0;0\n8;3,5\n', 'decimal commas'],
+      ['a row of three values', 'frequency_hz,speed_kn\n0,0\n8,3,5\n', 'Line 3 has 3 values']
+    ])('refuses a file with %s and leaves the table as it was', async (_case, content, words) => {
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, content)
+
+      expect(text(curve(el))).toContain(words)
+      expect(values(el)).toEqual([
+        ['0.0', '0.00'],
+        ['5.0', '2.00'],
+        ['10.0', '4.00']
+      ])
+    })
+  })
 })

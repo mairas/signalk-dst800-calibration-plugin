@@ -12,6 +12,9 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** A sentence from elsewhere without its full stop, to go inside another sentence. */
 export const clause = (text: string): string => text.trim().replace(/\.$/, '')
 
+/** The YYYY-MM-DD an ISO timestamp falls on. */
+export const dayOf = (iso: string): string => iso.split('T')[0]
+
 export const sameKey = (a: DeviceKey | null, b: DeviceKey | null): boolean =>
   a !== null &&
   b !== null &&

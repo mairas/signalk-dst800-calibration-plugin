@@ -150,6 +150,33 @@ export function unitFor(units: Units, spec: UnitSpec): DisplayUnit {
   return unit(conversion.symbol, decimals, toDisplay, toSi)
 }
 
+/**
+ * A unit of `spec`'s category named `name`, by its key or symbol in the
+ * server's definitions, or null when the server knows no such unit. For a
+ * file that names its own unit, whatever the user's preset shows.
+ */
+export function unitNamed(units: Units, spec: UnitSpec, name: string): DisplayUnit | null {
+  if ('fixed' in spec) {
+    return null
+  }
+  const base = units.preset.categories[spec.category]?.baseUnit ?? BASE_UNITS[spec.category]
+  if (base === undefined) {
+    return null
+  }
+  const conversions = units.definitions[base]?.conversions ?? {}
+  const key =
+    name === base
+      ? base
+      : Object.keys(conversions).find((k) => k === name || conversions[k].symbol === name)
+  if (key === undefined) {
+    return null
+  }
+  const preset: Preset = {
+    categories: { [spec.category]: { baseUnit: base, targetUnit: key } }
+  }
+  return unitFor({ preset, definitions: units.definitions }, spec)
+}
+
 async function getJson(url: string): Promise<unknown> {
   const response = await fetch(url, { credentials: 'same-origin' })
   if (!response.ok) {
