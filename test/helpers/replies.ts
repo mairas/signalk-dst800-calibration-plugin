@@ -53,7 +53,7 @@ export const curveReply = (
  * This stands in for PID 43 and 44, which answer once per filter type and
  * would be the more natural fixture. canboatjs cannot encode a Speed Filter
  * 126720: its variants match on `filterType`, and the encoder throws on every
- * field combination. See the note in AGENTS.md.
+ * field combination. See the note in docs/architecture.md.
  */
 export type PgnListKind = 'Transmit PGN list' | 'Receive PGN list'
 
