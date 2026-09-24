@@ -10,6 +10,7 @@ import {
   MAX_CURVE_POINTS,
   MAX_CURVE_SPEED
 } from '../protocol/pids.js'
+import { isRecord } from './format.js'
 import type { DisplayUnit } from './units.js'
 
 export { MAX_CURVE_POINTS }
@@ -30,9 +31,6 @@ export interface CurveProblem {
 }
 
 const HZ_DECIMALS = 1
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 /** A value the plugin reported as a curve, or null when it is not one. */
 export function curveOf(value: unknown): CurvePoint[] | null {
@@ -133,4 +131,27 @@ export function refusedAt(field: string): { point: number; field: 'hz' | 'speed'
   return match === null
     ? null
     : { point: Number(match[1]) - 1, field: match[2] === 'hz' ? 'hz' : 'speed' }
+}
+
+/** Each point that differs between two curves, as the user reads them, first to second. */
+export function curveChanges(
+  from: readonly CurvePoint[],
+  to: readonly CurvePoint[],
+  speed: DisplayUnit
+): string[] {
+  const before = rowsOf(from, speed)
+  const after = rowsOf(to, speed)
+  const point = ([hz, value]: CurveRow) => `${hz} Hz ${value} ${speed.symbol}`
+  return Array.from({ length: Math.max(before.length, after.length) }, (_, i) => {
+    const at = `Point ${String(i + 1)}`
+    const a = before.at(i)
+    const b = after.at(i)
+    if (a === undefined) {
+      return b === undefined ? null : `${at} added: ${point(b)}`
+    }
+    if (b === undefined) {
+      return `${at} removed: ${point(a)}`
+    }
+    return a[0] === b[0] && a[1] === b[1] ? null : `${at}: ${point(a)} → ${point(b)}`
+  }).filter((line) => line !== null)
 }

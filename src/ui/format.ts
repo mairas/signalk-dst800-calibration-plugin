@@ -6,6 +6,12 @@ export function clock(ms: number): string {
   return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** A sentence from elsewhere without its full stop, to go inside another sentence. */
+export const clause = (text: string): string => text.trim().replace(/\.$/, '')
+
 export const sameKey = (a: DeviceKey | null, b: DeviceKey | null): boolean =>
   a !== null &&
   b !== null &&

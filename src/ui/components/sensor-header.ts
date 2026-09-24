@@ -1,15 +1,12 @@
 import { html, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import type { AccessView, Candidate, DeviceKey, DeviceResponse } from '../../types.js'
-import { clock, deviceName, sameKey } from '../format.js'
+import { clock, deviceName, isRecord, sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import { SECTIONS } from '../settings.js'
 import './device-picker.js'
 
 const TICK_MS = 1000
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const text = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : null

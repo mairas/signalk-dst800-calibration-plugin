@@ -21,10 +21,12 @@ import {
   VIEWS,
   age,
   outcomeOf,
+  slotKey,
+  unitOf,
   storedValueOf,
   type Outcome
 } from '../settings.js'
-import { SI, unitFor, type DisplayUnit, type Units } from '../units.js'
+import { SI, type DisplayUnit, type Units } from '../units.js'
 import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
 import './pgn-table.js'
@@ -50,9 +52,6 @@ interface Slot {
   id: string
   qualifier: number | null
 }
-
-const slotKey = ({ id, qualifier }: Slot): string =>
-  `${id}:${qualifier === null ? '' : String(qualifier)}`
 
 const pathOf = ({ id, qualifier }: Slot): string =>
   `/settings/${id}${qualifier === null ? '' : `?qualifier=${String(qualifier)}`}`
@@ -335,8 +334,7 @@ export class SettingsPanel extends LightElement {
   }
 
   private unitOf(id: string): DisplayUnit | null {
-    const spec = VIEWS[id]?.unit
-    return spec === undefined ? null : unitFor(this.units, spec)
+    return unitOf(this.units, id)
   }
 
   private placeholder(info: SettingInfo, label: string) {

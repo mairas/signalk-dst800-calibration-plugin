@@ -1,6 +1,7 @@
 import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import { checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
+import { isRecord } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
   describeOutcome,
@@ -29,9 +30,6 @@ export type WriteRequest = CustomEvent<{ value: unknown }>
 
 /** How long "Stored." stays before the row goes quiet again. */
 const STORED_NOTICE_MS = 4000
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
 
 /** A curve's fields, two per point, back into its rows. */
 const pairs = (fields: readonly string[]): CurveRow[] =>

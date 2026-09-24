@@ -76,8 +76,8 @@ interface Sent {
 function sensor(
   options: {
     sent?: Sent[]
-    plan?: ImportPlan | Response
-    result?: ImportResult
+    plan?: ImportPlan | Response | Promise<Response>
+    result?: ImportResult | Response
     snapshot?: Snapshot
   } = {}
 ) {
@@ -92,10 +92,11 @@ function sensor(
       }
       if (method === 'POST' && path === '/snapshot/diff') {
         const plan = options.plan ?? PLAN
-        return plan instanceof Response ? plan : json(plan)
+        return plan instanceof Response || plan instanceof Promise ? plan : json(plan)
       }
       if (method === 'POST' && path === '/snapshot/import') {
-        return json(options.result ?? { source: DST, items: [], complete: true })
+        const result = options.result ?? { source: DST, items: [], complete: true }
+        return result instanceof Response ? result : json(result)
       }
       if (method === 'GET' && path.startsWith('/settings/')) {
         return json(answered(0.35))
@@ -202,6 +203,7 @@ describe('snapshots', () => {
       'Not in the snapshot: No answer'
     )
     expect(button(section(el), 'Apply 1 change').disabled).toBe(false)
+    expect(text(section(el))).not.toContain('another sensor')
   })
 
   it('applies the snapshot and reports each setting’s outcome', async () => {
@@ -282,6 +284,102 @@ describe('snapshots', () => {
       'Not attempted: an earlier change failed.'
     )
     expect(text(section(el))).toContain('The import stopped at the first change that failed.')
+  })
+
+  it('keeps the diff when Apply fails, and says settings may have changed', async () => {
+    sensor({
+      result: new Response(JSON.stringify({ error: 'The sensor is not on the bus.' }), {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'application/json' }
+      })
+    })
+    const el = await open()
+    await choose(el, JSON.stringify(SNAPSHOT))
+
+    button(section(el), 'Apply 1 change').click()
+    await settle()
+
+    expect(text(section(el))).not.toContain('is not a snapshot')
+    expect(text(section(el))).toContain('The import did not finish: The sensor is not on the bus.')
+    expect(text(section(el))).toContain('Some settings may have been written')
+    expect(text(section(el))).not.toContain('..')
+    expect(section(el).querySelector('[data-item="depthOffset:"]')).not.toBeNull()
+    expect(button(section(el), 'Apply 1 change').disabled).toBe(false)
+  })
+
+  it('says a diff the plugin could not run is not the file’s fault', async () => {
+    sensor({
+      plan: new Response(JSON.stringify({ error: 'The sensor is not on the bus.' }), {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'application/json' }
+      })
+    })
+    const el = await open()
+
+    await choose(el, JSON.stringify(SNAPSHOT))
+
+    expect(text(section(el))).not.toContain('is not a snapshot')
+    expect(text(section(el))).toContain(
+      'Could not compare dst.json with the sensor: The sensor is not on the bus.'
+    )
+  })
+
+  it('drops a diff that answers after another sensor was selected', async () => {
+    let answer: () => void = () => undefined
+    sensor({
+      plan: new Promise<Response>((resolve) => {
+        answer = () => {
+          resolve(json(PLAN))
+        }
+      })
+    })
+    const el = await open()
+    await choose(el, JSON.stringify(SNAPSHOT))
+
+    FakeEventSource.latest.push({ type: 'device', data: selected({ selected: OTHER }) })
+    await settle()
+    answer()
+    await settle()
+
+    expect(section(el).querySelector('[data-item]')).toBeNull()
+    expect(text(section(el))).not.toContain('Apply')
+  })
+
+  it('lists the points a curve of the same length would change', async () => {
+    const current = [
+      { hz: 0, speed: 0 },
+      { hz: 10, speed: 1.05 },
+      { hz: 25, speed: 2.6 }
+    ]
+    const snapshotCurve = [
+      { hz: 0, speed: 0 },
+      { hz: 10, speed: 1.1 },
+      { hz: 25, speed: 2.6 }
+    ]
+    sensor({
+      plan: {
+        source: DST,
+        items: [
+          {
+            id: 'speedCurve',
+            qualifier: null,
+            action: 'write',
+            value: snapshotCurve,
+            current: answered(current)
+          }
+        ]
+      }
+    })
+    const el = await open()
+
+    await choose(el, JSON.stringify(SNAPSHOT))
+
+    const row = text(section(el).querySelector('[data-item="speedCurve:"]'))
+    expect(row).toContain('Point 2: 10.0 Hz 1.05 m/s → 10.0 Hz 1.10 m/s')
+    expect(row).not.toContain('Point 1')
+    expect(row).not.toContain('Point 3')
   })
 
   it('says when everything applied', async () => {
