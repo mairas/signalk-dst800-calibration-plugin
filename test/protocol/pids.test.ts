@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { AirmarCommandValues } from '@canboat/ts-pgns'
-import { AirmarPid, CALIBRATE_SPEED_NAME, pidFromName, pidName } from '../../src/protocol/pids.js'
+import { AirmarCommandValues, getPGNWithNumber } from '@canboat/ts-pgns'
+import {
+  AirmarPid,
+  CALIBRATE_SPEED_NAME,
+  SINGLE_FRAME_PGNS,
+  pidFromName,
+  pidName
+} from '../../src/protocol/pids.js'
 
 /**
  * The table is pinned against canboat's own lookup, not against a copy of
@@ -49,4 +55,23 @@ describe('proprietary ID names', () => {
     expect(CALIBRATE_SPEED_NAME).toBe('Calibrate Speed')
     expect(AirmarCommandValues[CALIBRATE_SPEED_NAME]).toBe(AirmarPid.CalibrateSpeed)
   })
+})
+
+describe('frame types', () => {
+  const typesOf = (pgn: number) => (getPGNWithNumber(pgn) ?? []).map((d) => d.Type as string)
+
+  it.each(SINGLE_FRAME_PGNS)('agrees with canboat that PGN %i is single-frame', (pgn) => {
+    const types = typesOf(pgn)
+
+    expect(types.length).toBeGreaterThan(0)
+    expect(types).not.toContain('Fast')
+  })
+
+  it.each([126464, 126996, 126998, 128275, 130944])(
+    'leaves fast-packet PGN %i out of the single-frame table',
+    (pgn) => {
+      expect(typesOf(pgn)).toContain('Fast')
+      expect(SINGLE_FRAME_PGNS).not.toContain(pgn)
+    }
+  )
 })

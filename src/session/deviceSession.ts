@@ -83,7 +83,15 @@ export interface ReadSpec<T> extends BaseSpec {
 }
 
 /** An operation answered by the acknowledgement alone. */
-export type CommandSpec = BaseSpec
+export interface CommandSpec extends BaseSpec {
+  /**
+   * The device acknowledges only a refusal, so silence is acceptance. A
+   * transmission interval Request is one (manual p.15). Silence then costs
+   * none of what a timeout costs: no mute, and no count toward forgetting
+   * the gateway address.
+   */
+  silenceMeansAccepted?: boolean
+}
 
 export interface DeviceSessionOptions {
   /** The device's current NMEA 2000 source address. */
@@ -640,6 +648,14 @@ export class DeviceSession {
 
       const timer = setTimeout(() => {
         if (settled) {
+          return
+        }
+        if ('silenceMeansAccepted' in spec && spec.silenceMeansAccepted === true) {
+          // Not through finish(): silence proves nothing about the address,
+          // so it must not clear the timeouts that came before it.
+          settled = true
+          this.inFlight = null
+          resolve({ outcome: { status: 'answered', value: collected }, retry: 'none' })
           return
         }
         // Remember what this attempt is still owed, so the next request of the

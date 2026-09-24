@@ -13,6 +13,7 @@ import {
   commandStandardField,
   decodeSpeedCurve,
   masterReset,
+  requestInterval,
   requestSpeedCurve,
   setSpeedCurve
 } from '../../src/protocol/codec.js'
@@ -812,6 +813,55 @@ describe('DeviceSession', () => {
 
       expect((await pending).status).toBe('unknown')
       expect(session.level1Unavailable).toBe(false)
+    })
+  })
+
+  describe('a request the device answers only to refuse', () => {
+    const setInterval = (): CommandSpec => ({
+      message: requestInterval(DEVICE, PGN.waterDepth, 500),
+      silenceMeansAccepted: true
+    })
+
+    it('takes silence as acceptance, without counting it as a timeout', async () => {
+      await answerOnce()
+      await answerOnce()
+
+      for (let i = 0; i < 3; i += 1) {
+        const pending = session.command(setInterval())
+        await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+        expect(await pending).toEqual({ status: 'answered', value: undefined })
+      }
+      expect(session.gatewayAddress).toBe(GATEWAY)
+    })
+
+    it('leaves the count of timeouts alone, so two failed reads around it still forget the gateway', async () => {
+      await answerOnce()
+      await answerOnce()
+      const first = session.read(readCurve())
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await first
+      const accepted = session.command(setInterval())
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await accepted
+      const second = session.read(readCurve())
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS * 2)
+      await second
+
+      expect(session.gatewayAddress).toBeNull()
+    })
+
+    it('reports the device’s refusal', async () => {
+      const pending = session.command(setInterval())
+      await flush()
+      bus.deliver(
+        acknowledge(
+          { acknowledgedPgn: PGN.waterDepth, intervalErrorCode: 'Transmit Interval too low' },
+          fromDevice()
+        )
+      )
+
+      expect(await pending).toMatchObject({ status: 'rejected' })
     })
   })
 

@@ -17,7 +17,7 @@
 
 import { requestAirmarPgn, requestProprietary, requestStandardPgn } from '../protocol/codec.js'
 import type { DecodedPgn, OutgoingPgn } from '../protocol/messages.js'
-import { AirmarPid, PGN } from '../protocol/pids.js'
+import { AirmarPid, PGN, isAirmarPgn } from '../protocol/pids.js'
 import type { DeviceSession } from '../session/deviceSession.js'
 import { isAccessDenied, type Outcome } from '../session/outcome.js'
 import type { DeviceKey } from '../types.js'
@@ -51,15 +51,6 @@ export interface ProbeResult {
    */
   interrupted: boolean
 }
-
-/** Airmar's own PGNs, which answer only a Request naming the manufacturer. */
-const AIRMAR_PGNS = new Set<number>([
-  PGN.accessLevel,
-  PGN.depthQualityFactor,
-  PGN.speedPulseCount,
-  PGN.deviceInformation,
-  PGN.post
-])
 
 /** In the order they are asked. */
 export const PROBED: readonly Capability[] = [
@@ -105,7 +96,7 @@ function requestFor(address: number, capability: Capability): OutgoingPgn {
   if (capability.kind === 'pid') {
     return requestProprietary(address, capability.pid)
   }
-  return AIRMAR_PGNS.has(capability.pgn)
+  return isAirmarPgn(capability.pgn)
     ? requestAirmarPgn(address, capability.pgn)
     : requestStandardPgn(address, capability.pgn)
 }

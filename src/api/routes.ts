@@ -28,6 +28,8 @@ import { EepromResetOption } from '../protocol/pids.js'
 import type { ConsoleRuntime } from '../runtime.js'
 import type { EventStream } from './events.js'
 import { readSetting, writeSetting } from '../settings/operations.js'
+import { readPgns, writeInterval, writePriority } from '../settings/pgnIntervals.js'
+import { MAX_PGN } from '../protocol/pids.js'
 import { SETTINGS, isSettingId, type AnySetting } from '../settings/registry.js'
 import {
   deviceKeyOf,
@@ -220,6 +222,42 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       return
     }
     await restart(res, (address) => resetEeprom(address, option))
+  })
+
+  router.get('/api/pgns', async (_req: Request, res: Response) => {
+    const selected = sessionOf(res)
+    if (selected === null) {
+      return
+    }
+    const { runtime, session } = selected
+    const key = runtime.selected
+    res.json(await readPgns(session, key === null ? undefined : runtime.probes.get(key)))
+  })
+
+  router.put('/api/pgns/:pgn', async (req: Request, res: Response) => {
+    const raw = String(req.params.pgn)
+    const body: unknown = req.body
+    const fields =
+      typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+    const interval = 'intervalMs' in fields
+    if (!/^\d+$/.test(raw) || Number(raw) > MAX_PGN || interval === 'priority' in fields) {
+      error(res, 400, 'Send { "intervalMs": n } or { "priority": n } to /api/pgns/<pgn>')
+      return
+    }
+    const selected = sessionOf(res)
+    if (selected === null) {
+      return
+    }
+    const { runtime, session } = selected
+    const pgn = Number(raw)
+    const result = interval
+      ? await writeInterval(runtime.pgnContext(session), pgn, fields.intervalMs)
+      : await writePriority(session, pgn, fields.priority)
+    if (result.status === 'invalid') {
+      error(res, 400, result.reason)
+      return
+    }
+    res.json(result)
   })
 
   readonly.get('/api/settings', (_req: Request, res: Response) => {

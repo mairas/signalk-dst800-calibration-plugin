@@ -10,6 +10,13 @@
 
 import type { CapabilityState, Level1State, ProbeResult } from '../devices/probe.js'
 import type { ReadResult, WriteResult } from '../settings/operations.js'
+import type { PgnListResult, PgnWriteResult } from '../settings/pgnIntervals.js'
+import {
+  MAX_INTERVAL_MS,
+  MAX_PRIORITY,
+  MIN_SINGLE_FRAME_INTERVAL_MS
+} from '../settings/pgnIntervals.js'
+import { MAX_PGN } from '../protocol/pids.js'
 import { SETTINGS } from '../settings/registry.js'
 import {
   MANUFACTURER_CODE_BITS,
@@ -61,6 +68,20 @@ const RESET_STATUSES = keysOf({ claimed: true, notSent: true, lost: true } satis
   ResetResult['status'],
   true
 >)
+
+const PGN_LIST_STATUSES = keysOf({ answered: true, rejected: true, unknown: true } satisfies Record<
+  PgnListResult['status'],
+  true
+>)
+
+const PGN_WRITE_STATUSES = keysOf({
+  applied: true,
+  observedDiffers: true,
+  unconfirmed: true,
+  rejected: true,
+  notSent: true,
+  unknown: true
+} satisfies Record<Exclude<PgnWriteResult['status'], 'invalid'>, true>)
 
 const settingIds = SETTINGS.map((s) => s.id)
 
@@ -142,6 +163,46 @@ const resetResult = object(
     reason: { type: 'string', description: 'Why not `claimed`' }
   },
   ['probe', 'reason']
+)
+
+const pgnList = object(
+  {
+    status: { type: 'string', enum: PGN_LIST_STATUSES },
+    pgns: {
+      type: 'array',
+      description:
+        'The transmit list, then the Airmar PGNs the last probe confirmed; only when `answered`',
+      items: object({
+        pgn: { type: 'integer' },
+        minIntervalMs: {
+          type: 'integer',
+          description: '50 for a single-frame PGN, 100 for fast-packet'
+        },
+        telemetry: { type: 'boolean', description: 'The plugin’s telemetry reads this PGN' }
+      })
+    },
+    reason: { type: 'string' }
+  },
+  ['pgns', 'reason']
+)
+
+const pgnWrite = object(
+  {
+    status: { type: 'string', enum: PGN_WRITE_STATUSES },
+    observedIntervalMs: {
+      type: 'integer',
+      description: 'The period timed on the bus after the write'
+    },
+    requestedIntervalMs: { type: 'integer' },
+    reason: { type: 'string' },
+    detail: { type: 'object', description: 'The device’s acknowledgement, when it refused' },
+    warning: {
+      type: 'string',
+      description:
+        'Set on an interval write that reached the device, for a PGN the plugin’s telemetry reads'
+    }
+  },
+  ['observedIntervalMs', 'requestedIntervalMs', 'reason', 'detail', 'warning']
 )
 
 const selection = object({
@@ -305,6 +366,55 @@ export const openApi = {
           ...json(object({ option: { type: 'string', enum: RESTORE_OPTION_NAMES } }))
         },
         responses: { ...resetResponses, '400': errorResponse('Not a restore option') }
+      }
+    },
+    '/api/pgns': {
+      get: {
+        summary: 'The PGNs whose interval and priority can be set',
+        description:
+          'Reads PGN 126464 from the device. It excludes proprietary PGNs, so the Airmar PGNs the last probe confirmed are added.',
+        responses: {
+          '200': { description: 'The device’s answer', ...json(pgnList) },
+          '409': errorResponse('No device is selected'),
+          '503': notRunningOrUnheard
+        }
+      }
+    },
+    '/api/pgns/{pgn}': {
+      put: {
+        summary: 'Set how often, or at what priority, the device transmits a PGN',
+        description:
+          'Send exactly one of `intervalMs` or `priority`. The device acknowledges an interval only to refuse it, so the route then times the PGN on the bus: it waits up to three intervals plus 5 s. To restore defaults, use `/api/device/restore` with `priorities` or `updateRates`.',
+        parameters: [
+          {
+            name: 'pgn',
+            in: 'path',
+            required: true,
+            schema: { type: 'integer', minimum: 0, maximum: MAX_PGN }
+          }
+        ],
+        requestBody: {
+          required: true,
+          ...json(
+            object(
+              {
+                intervalMs: {
+                  type: 'integer',
+                  minimum: MIN_SINGLE_FRAME_INTERVAL_MS,
+                  maximum: MAX_INTERVAL_MS
+                },
+                priority: { type: 'integer', minimum: 0, maximum: MAX_PRIORITY }
+              },
+              ['intervalMs', 'priority']
+            )
+          )
+        },
+        responses: {
+          '200': { description: 'The device’s answer and what was observed', ...json(pgnWrite) },
+          '400': errorResponse('Not exactly one of the two, or out of range'),
+          '409': errorResponse('No device is selected'),
+          '503': notRunningOrUnheard
+        }
       }
     },
     '/api/settings': {
