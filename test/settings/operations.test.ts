@@ -209,6 +209,8 @@ describe('settings operations', () => {
 
       expect(result.status).toBe('rejected')
       expect(result.status === 'rejected' && result.requested).toBe('factory')
+      // The plugin does not know the factory points, so it cannot say whether the kept curve is them.
+      expect(result).not.toHaveProperty('storedMatches')
       expect(result.status === 'rejected' && result.readBack).toEqual({
         status: 'answered',
         value: [{ hz: 10, speed: 1 }],

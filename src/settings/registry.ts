@@ -74,6 +74,11 @@ export interface Setting<Stored, Written> {
   /** Whether the device stored what was asked for, at the device's own resolution. */
   sameAsStored(requested: Written, stored: Stored): boolean
   /**
+   * The value asks the device to restore its own default, which the plugin
+   * does not know, so no read-back can be compared with it.
+   */
+  isRestore?(value: Written): boolean
+  /**
    * The user's name for a field of the commanded PGN, so a refusal can say
    * which one the device refused. Null for a field the entry does not write.
    */
@@ -385,13 +390,14 @@ const speedCurve: Setting<CurvePoint[], CurvePoint[] | typeof FACTORY_CURVE> = {
   command: (address, value) =>
     value === FACTORY_CURVE ? restoreDefaultSpeedCurve(address) : setSpeedCurve(address, value),
   sameAsStored: (requested, stored) =>
-    requested === FACTORY_CURVE ||
-    (requested.length === stored.length &&
-      requested.every(
-        (point, i) =>
-          sameAt(CURVE_HZ_RESOLUTION, point.hz, stored[i].hz) &&
-          sameAt(CURVE_SPEED_RESOLUTION, point.speed, stored[i].speed)
-      )),
+    requested !== FACTORY_CURVE &&
+    requested.length === stored.length &&
+    requested.every(
+      (point, i) =>
+        sameAt(CURVE_HZ_RESOLUTION, point.hz, stored[i].hz) &&
+        sameAt(CURVE_SPEED_RESOLUTION, point.speed, stored[i].speed)
+    ),
+  isRestore: (value) => value === FACTORY_CURVE,
   // Field 5 is the point count, then each point is a frequency and speed pair.
   fieldName: (parameter) => {
     if (parameter === 5) {
