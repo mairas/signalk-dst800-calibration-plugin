@@ -19,6 +19,11 @@ import {
 import { MAX_PGN } from '../protocol/pids.js'
 import { SETTINGS } from '../settings/registry.js'
 import {
+  SNAPSHOT_SCHEMA_VERSION,
+  type ImportItem,
+  type WriteOutcome
+} from '../snapshots/snapshot.js'
+import {
   MANUFACTURER_CODE_BITS,
   UNIQUE_NUMBER_BITS,
   type ResetResult,
@@ -82,6 +87,19 @@ const PGN_WRITE_STATUSES = keysOf({
   notSent: true,
   unknown: true
 } satisfies Record<Exclude<PgnWriteResult['status'], 'invalid'>, true>)
+
+const IMPORT_ACTIONS = keysOf({
+  write: true,
+  unchanged: true,
+  excluded: true,
+  unsupported: true,
+  missing: true
+} satisfies Record<ImportItem['action'], true>)
+
+const WRITE_OUTCOMES = keysOf({ applied: true, failed: true, notAttempted: true } satisfies Record<
+  WriteOutcome['outcome'],
+  true
+>)
 
 const settingIds = SETTINGS.map((s) => s.id)
 
@@ -276,6 +294,73 @@ const writeOutcome = {
     'The device’s answer and what it stores. `status` is the discriminant; `notSent` means the command never reached the bus.'
 }
 
+const slot = {
+  id: { type: 'string', enum: settingIds },
+  qualifier: nullable({ type: 'integer', minimum: 0 })
+}
+
+const snapshot = object({
+  schemaVersion: { type: 'integer', enum: [SNAPSHOT_SCHEMA_VERSION] },
+  takenAt: { type: 'string', format: 'date-time' },
+  device: { ...deviceKey, description: 'The device the snapshot was taken from' },
+  probed: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'The capabilities its probe confirmed, such as `pid:41` or `pgn:126998`'
+  },
+  settings: {
+    type: 'array',
+    items: object({ ...slot, value: { description: 'As the device reported it' } })
+  },
+  unread: {
+    type: 'array',
+    description: 'Settings the snapshot tried to read and could not',
+    items: object({ ...slot, reason: { type: 'string' } })
+  }
+})
+
+const importItemProperties = {
+  ...slot,
+  action: { type: 'string', enum: IMPORT_ACTIONS },
+  value: { description: 'The snapshot’s value; absent when `missing`' },
+  current: {
+    description:
+      'The device’s value when `unchanged`; its whole read outcome when `write`, which may be a timeout'
+  },
+  reason: { type: 'string', description: 'Why `excluded`, `unsupported` or `missing`' }
+}
+const importItemOptional = ['value', 'current', 'reason']
+
+const importPlan = object({
+  source: { ...deviceKey, description: 'The device the snapshot was taken from' },
+  items: {
+    type: 'array',
+    description: 'In the order the writes run',
+    items: object(importItemProperties, importItemOptional)
+  }
+})
+
+const importResult = object({
+  source: { ...deviceKey, description: 'The device the snapshot was taken from' },
+  items: {
+    type: 'array',
+    items: object(
+      {
+        ...importItemProperties,
+        outcome: {
+          type: 'string',
+          enum: WRITE_OUTCOMES,
+          description:
+            'Only when `write`. `failed` is anything but `applied`, a stored value that differs included; the import stops there.'
+        },
+        result: { ...writeOutcome, description: 'The write’s outcome, unless `notAttempted`' }
+      },
+      [...importItemOptional, 'outcome', 'result']
+    )
+  },
+  complete: { type: 'boolean', description: 'Every write was applied' }
+})
+
 const settingId = {
   name: 'id',
   in: 'path',
@@ -440,6 +525,46 @@ export const openApi = {
             content: { 'text/event-stream': { schema: { type: 'string' } } }
           },
           '503': notRunning
+        }
+      }
+    },
+    '/api/snapshot': {
+      get: {
+        summary: 'Read every setting the probe did not reject, as a snapshot to keep',
+        description:
+          'Probes the device first if it has not been probed. Write-only settings, the filters, are not in it. A setting that went unanswered is listed in `unread`.',
+        responses: {
+          '200': { description: 'The snapshot', ...json(snapshot) },
+          '409': errorResponse('No device is selected'),
+          '503': notRunningOrUnheard
+        }
+      }
+    },
+    '/api/snapshot/diff': {
+      post: {
+        summary: 'What importing a snapshot into the selected device would change',
+        description:
+          'Reads the device, writes nothing. Simulate mode, the distance log and product information are `excluded`. A setting the device’s probe rejected, or whose read the device itself refuses, is `unsupported`.',
+        requestBody: { required: true, ...json(snapshot) },
+        responses: {
+          '200': { description: 'The diff', ...json(importPlan) },
+          '400': errorResponse('Not a snapshot this plugin reads, or a value it would refuse'),
+          '409': errorResponse('No device is selected'),
+          '503': notRunningOrUnheard
+        }
+      }
+    },
+    '/api/snapshot/import': {
+      post: {
+        summary: 'Write the settings that differ, in order, stopping at the first that fails',
+        description:
+          'Works out the diff afresh, then writes each `write` item. After a failure every later write is `notAttempted`.',
+        requestBody: { required: true, ...json(snapshot) },
+        responses: {
+          '200': { description: 'Each setting’s outcome', ...json(importResult) },
+          '400': errorResponse('Not a snapshot this plugin reads, or a value it would refuse'),
+          '409': errorResponse('No device is selected'),
+          '503': notRunningOrUnheard
         }
       }
     },

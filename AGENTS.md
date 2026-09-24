@@ -175,6 +175,16 @@ PGN transmission intervals and priorities live in `src/settings/pgnIntervals.ts`
 
 The OpenAPI document is `src/api/openApi.ts`. A test fails when a registered route is missing from it, when a list, selection or probe body's fields differ from its schema, or when a setting's read or write body carries a field its schema does not list. The status enums are checked against the result types at compile time. The response types live in `src/types.ts` beside `HealthResponse`, for the webapp to share.
 
+## Snapshots
+
+`src/snapshots/snapshot.ts` exports every readable registry entry the probe did not reject, including the depth offset, which is not probed, and each temperature source separately. A capability the probe heard nothing for is still read, because one lost fast-packet frame causes that. PGN intervals and priorities are not in a snapshot: the plugin has no way to read them back. A read that fails lands in `unread`, so a snapshot missing its curve says so instead of looking complete.
+
+A snapshot file is outside input. `parseSnapshot` refuses an unknown schema version, an unknown setting or qualifier, a slot listed twice, and any re-appliable value its entry's `parse` refuses, so a bad file is refused whole before anything is read or written.
+
+Import reads the target, compares with each entry's `sameAsStored`, and writes only what differs, in registry order. Simulate mode, the distance log and product information are `excluded`, and neither read nor written. A setting the target's probe rejected, or whose read the target itself refuses, is `unsupported`. Only an acknowledgement from the device counts as that refusal, and not one naming PGN 65287 or denying access: a read the session refused, because Level 1 is unavailable or its queue is full, says nothing about the device. Such a setting is written like one whose read went unanswered, and its write fails for the same reason and stops the import. Anything but `applied` stops the import, `storedDiffers` and an unconfirmed `acknowledged` included, because the device then holds something other than the snapshot, and every later write reports `notAttempted`. `/api/snapshot/import` works out the diff afresh rather than trusting the one the console showed.
+
+The three snapshot routes read the device, so they stay admin.
+
 ## This repository is public
 
 Never write hostnames, addresses, ports, network layout or account names of local infrastructure into the README, the source, test fixtures, issues or commit messages. Use a placeholder or name the product. Vessel names are ordinary test data.

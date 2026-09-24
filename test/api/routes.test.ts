@@ -197,6 +197,9 @@ describe('REST API', () => {
         'get /api/settings': 'readonly',
         'get /api/settings/:id': 'admin',
         'put /api/settings/:id': 'admin',
+        'get /api/snapshot': 'admin',
+        'post /api/snapshot/diff': 'admin',
+        'post /api/snapshot/import': 'admin',
         'get /api/events': 'readonly'
       })
     })
@@ -819,6 +822,113 @@ describe('REST API', () => {
       expect(response.status).toBe(400)
       expect(sent).toHaveLength(0)
       expect(raw).toHaveLength(0)
+    })
+  })
+
+  describe('snapshots', () => {
+    const stored = { depthOffset: 0.35 }
+
+    /**
+     * A depth-only device: it refuses every Airmar PID, answers the standard
+     * PGNs from fixtures, and stores the depth offset it is sent.
+     */
+    const depthOnlyDevice = () => {
+      stored.depthOffset = 0.35
+      app.events.on('nmea2000JsonOut', (message: OutgoingPgn) => {
+        const target = Number(message.fields.pgn)
+        const list = (message.fields.list ?? []) as { parameter: number; value: number }[]
+        queueMicrotask(() => {
+          if (message.fields.functionCode === 'Command') {
+            if (target === PGN.waterDepth) {
+              stored.depthOffset = list.find((p) => p.parameter === 3)?.value ?? NaN
+            }
+            deliver(acknowledge({ acknowledgedPgn: target }, from))
+          } else if (target === PGN.proprietary) {
+            deliver(
+              acknowledge({ acknowledgedPgn: target, pgnErrorCode: 'PGN not supported' }, from)
+            )
+          } else if (target === PGN.waterDepth) {
+            deliver(depthReply(stored.depthOffset))
+          } else {
+            deliver(pgnReply(target, from))
+          }
+        })
+      })
+    }
+
+    const settle = async <T>(pending: Promise<T>): Promise<T> => {
+      await vi.advanceTimersByTimeAsync(60_000)
+      return pending
+    }
+
+    const exported = async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      depthOnlyDevice()
+      return (await settle(call('get', '/api/snapshot'))).body as {
+        settings: { id: string; value: unknown }[]
+      }
+    }
+
+    const commandsTo = (pgn: number) =>
+      sent.filter((m) => m.fields.functionCode === 'Command' && Number(m.fields.pgn) === pgn)
+
+    it('probes, then reads every setting the probe confirmed, in the documented shape', async () => {
+      const snapshot = await exported()
+
+      expect(snapshot.settings.map((s) => s.id)).toEqual([
+        'depthOffset',
+        'installationDescription',
+        'productInformation',
+        'distanceLog'
+      ])
+      expect(keys(snapshot)).toEqual(propertiesOf(documented('/api/snapshot', 'get')))
+    })
+
+    it('finds nothing to change on the device it came from', async () => {
+      const snapshot = await exported()
+
+      const diff = await settle(call('post', '/api/snapshot/diff', { body: snapshot }))
+      const items = (diff.body as { items: { action: string }[] }).items
+
+      expect(items.map((i) => i.action)).toEqual(['unchanged', 'unchanged', 'excluded', 'excluded'])
+      expect(keys(diff.body)).toEqual(propertiesOf(documented('/api/snapshot/diff', 'post')))
+      expect(commandsTo(PGN.waterDepth)).toEqual([])
+    })
+
+    it('writes the setting that differs and reports what the device stored', async () => {
+      const snapshot = await exported()
+      const edited = {
+        ...snapshot,
+        settings: snapshot.settings.map((s) => (s.id === 'depthOffset' ? { ...s, value: 0.5 } : s))
+      }
+
+      const response = await settle(call('post', '/api/snapshot/import', { body: edited }))
+
+      expect(response.body).toMatchObject({
+        complete: true,
+        items: [
+          { id: 'depthOffset', action: 'write', outcome: 'applied', result: { stored: 0.5 } },
+          { action: 'unchanged' },
+          { action: 'excluded' },
+          { action: 'excluded' }
+        ]
+      })
+      expect(stored.depthOffset).toBe(0.5)
+      expect(commandsTo(PGN.waterDepth)).toHaveLength(1)
+      expect(keys(response.body)).toEqual(propertiesOf(documented('/api/snapshot/import', 'post')))
+    })
+
+    it('refuses a snapshot of another schema version with 400, before the bus', async () => {
+      const snapshot = await exported()
+      const before = sent.length
+
+      const response = await call('post', '/api/snapshot/import', {
+        body: { ...snapshot, schemaVersion: 99 }
+      })
+
+      expect(response.status).toBe(400)
+      expect(sent).toHaveLength(before)
     })
   })
 
