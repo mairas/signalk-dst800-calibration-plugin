@@ -3,6 +3,7 @@ import type {
   Candidate,
   DeviceResponse,
   DevicesResponse,
+  PgnListResult,
   ProbeResult,
   ServerEvent,
   SettingInfo,
@@ -90,7 +91,7 @@ export const json = (body: unknown, status = 200) =>
 export type Handler = (path: string, init?: RequestInit) => Response | Promise<Response>
 
 /**
- * Answer the plugin API: GET /devices, /device and /settings from the
+ * Answer the plugin API: GET /devices, /device, /settings and /pgns from the
  * arguments, and anything else through `other`.
  */
 export function serve(
@@ -98,7 +99,9 @@ export function serve(
   other?: Handler,
   settings: SettingInfo[] = [],
   /** The server's own API by URL, such as its unit preferences; anything else is 404. */
-  server: Record<string, unknown> = {}
+  server: Record<string, unknown> = {},
+  /** What the sensor transmits; nothing by default, and null passes GET /pgns to `other`. */
+  pgns: PgnListResult | null = { status: 'answered', pgns: [] }
 ): void {
   vi.mocked(fetch).mockImplementation((input, init) => {
     const url = input as string
@@ -115,6 +118,9 @@ export function serve(
     }
     if (method === 'GET' && path === '/settings') {
       return Promise.resolve(json({ settings } satisfies SettingsResponse))
+    }
+    if (method === 'GET' && path === '/pgns' && pgns !== null) {
+      return Promise.resolve(json(pgns))
     }
     if (other !== undefined) {
       return Promise.resolve(other(path, init))

@@ -82,12 +82,12 @@ export const VIEWS: Partial<Record<string, SettingView>> = {
   },
   transmissionIntervalOverride: {
     label: 'Transmission intervals',
-    help: 'Whether the sensor sends each message at its measurement interval or at the interval set for that message.',
+    help: 'Whether a message may be sent faster than the sensor measures its data. If so, values repeat until measured again. A longer interval applies either way.',
     editor: {
       kind: 'choice',
       options: [
-        { value: false, label: 'Measurement interval' },
-        { value: true, label: 'As set per message' }
+        { value: false, label: 'No faster than measured' },
+        { value: true, label: 'As set, repeating values' }
       ]
     }
   },
