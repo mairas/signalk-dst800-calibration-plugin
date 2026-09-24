@@ -42,7 +42,7 @@ reviews:
       enabled: true
     eslint:
       enabled: true
-    # README and AGENTS.md are deliberate prose with a deliberate voice.
+    # README, AGENTS.md and docs/ are deliberate prose with a deliberate voice.
     markdownlint:
       enabled: false
     languagetool:
@@ -155,3 +155,4 @@ knowledge_base:
     enabled: true
     filePatterns:
       - AGENTS.md
+      - docs/architecture.md
