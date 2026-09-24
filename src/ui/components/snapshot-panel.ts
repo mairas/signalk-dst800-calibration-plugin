@@ -1,5 +1,5 @@
 import { html, nothing } from 'lit'
-import { customElement, property, state } from 'lit/decorators.js'
+import { customElement, property, query, state } from 'lit/decorators.js'
 import type {
   DeviceKey,
   ImportItem,
@@ -61,6 +61,8 @@ export class SnapshotPanel extends LightElement {
   @state() private saving = false
   @state() private saved: { tone: string; text: string; detail: string | null } | null = null
   @state() private loaded: Loaded | null = null
+
+  @query('input[type="file"]') private picker!: HTMLInputElement
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
     const previous = changed.get('selected') as DeviceKey | null | undefined
@@ -247,8 +249,8 @@ export class SnapshotPanel extends LightElement {
       ${
         loaded.state === 'unfinished'
           ? html`<p class="text-danger-emphasis mb-2" role="alert">
-              The import did not finish: ${loaded.reason}. Some settings may have been written; the
-              settings above show what the sensor holds.
+              The import did not finish: ${loaded.reason}. Some settings may have been written. The
+              list above is from before the import; the setting rows show what the sensor now holds.
             </p>`
           : nothing
       }
@@ -319,7 +321,9 @@ export class SnapshotPanel extends LightElement {
   }
 
   override render() {
-    const busy = this.saving || this.loaded?.state === 'applying'
+    // One request at a time: a second comparison could answer before the first.
+    const busy =
+      this.saving || this.loaded?.state === 'reading' || this.loaded?.state === 'applying'
     return html`
       <div class="card-body">
         <p class="form-text mt-0">
@@ -343,18 +347,23 @@ export class SnapshotPanel extends LightElement {
                 : 'Save snapshot'
             }
           </button>
-          <label
-            class=${`btn btn-sm btn-outline-secondary mb-0 ${this.disabled || busy ? 'disabled' : ''}`}
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            ?disabled=${this.disabled || busy}
+            @click=${() => {
+              this.picker.click()
+            }}
           >
             Load snapshot…
-            <input
-              type="file"
-              accept=".json,application/json"
-              hidden
-              ?disabled=${this.disabled || busy}
-              @change=${(event: Event) => this.load(event)}
-            />
-          </label>
+          </button>
+          <input
+            type="file"
+            accept=".json,application/json"
+            hidden
+            ?disabled=${this.disabled || busy}
+            @change=${(event: Event) => this.load(event)}
+          />
         </div>
         ${
           this.saved === null

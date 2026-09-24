@@ -303,6 +303,8 @@ describe('snapshots', () => {
     expect(text(section(el))).not.toContain('is not a snapshot')
     expect(text(section(el))).toContain('The import did not finish: The sensor is not on the bus.')
     expect(text(section(el))).toContain('Some settings may have been written')
+    // The diff's current values are from before the import; the rows are the sensor's.
+    expect(text(section(el))).toContain('The list above is from before the import')
     expect(text(section(el))).not.toContain('..')
     expect(section(el).querySelector('[data-item="depthOffset:"]')).not.toBeNull()
     expect(button(section(el), 'Apply 1 change').disabled).toBe(false)
@@ -463,5 +465,30 @@ describe('snapshots', () => {
 
     expect(button(section(el), 'Save snapshot').disabled).toBe(true)
     expect(section(el).querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true)
+    expect(button(section(el), 'Load snapshot…').disabled).toBe(true)
+  })
+
+  it('opens the file picker from a button a keyboard can reach', async () => {
+    sensor()
+    const el = await open()
+    const picked = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined)
+
+    const load = button(section(el), 'Load snapshot…')
+    load.click()
+
+    expect(load.tabIndex).toBe(0)
+    expect(picked).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not start a second comparison while one is running', async () => {
+    const sent: Sent[] = []
+    sensor({ sent, plan: new Promise<Response>(() => undefined) })
+    const el = await open()
+
+    await choose(el, JSON.stringify(SNAPSHOT))
+
+    expect(text(section(el))).toContain('Comparing dst.json with the sensor')
+    expect(button(section(el), 'Load snapshot…').disabled).toBe(true)
+    expect(button(section(el), 'Save snapshot').disabled).toBe(true)
   })
 })
