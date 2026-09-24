@@ -373,6 +373,7 @@ export class SettingsPanel extends LightElement {
   }
 
   private async write(slot: Slot, value: unknown): Promise<void> {
+    const key = this.selected
     this.change(slot, (row) => ({ ...row, busy: 'write' }))
     const body = slot.qualifier === null ? { value } : { value, qualifier: slot.qualifier }
     let result: WriteResult
@@ -380,6 +381,10 @@ export class SettingsPanel extends LightElement {
       result = await request<WriteResult>('PUT', `/settings/${slot.id}`, body)
     } catch (cause) {
       result = { status: 'invalid', reason: describeFailure(cause) }
+    }
+    if (!sameKey(this.selected, key)) {
+      // The answer is about a sensor no longer on screen, like a read that arrives late.
+      return
     }
     if (result.status !== 'unknown') {
       this.settle(slot, outcomeOf('write', result), result)

@@ -242,6 +242,9 @@ export function parseSnapshot(input: unknown): ParseResult<Snapshot> {
       if (!checked.ok) {
         return fail(`${where} (${slot.value.id}): ${checked.error}`)
       }
+      if (target.isRestore?.(checked.value) === true) {
+        return fail(`${where} (${slot.value.id}): a snapshot holds values, not a restore`)
+      }
     }
     values.push({ ...slot.value, value: entry.value })
   }

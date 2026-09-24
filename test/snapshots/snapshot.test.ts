@@ -234,6 +234,15 @@ describe('snapshots', () => {
       expect(!result.ok && result.error).toContain('speedOfSound')
     })
 
+    it('refuses the factory curve restore, since a snapshot holds values', async () => {
+      const snapshot = await snapshotWith({ 'speedCurve:': 'factory' })
+
+      const result = parseSnapshot(snapshot)
+
+      expect(result.ok).toBe(false)
+      expect(!result.ok && result.error).toContain('speedCurve')
+    })
+
     it('refuses a setting it does not know', async () => {
       const snapshot = await exportFrom()
       snapshot.settings.push({ id: 'warpDrive' as SettingId, qualifier: null, value: 1 })

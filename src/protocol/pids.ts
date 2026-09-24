@@ -123,6 +123,13 @@ export const CALIBRATE_SPEED_NAME = PID_NAMES[AirmarPid.CalibrateSpeed]
 /** Field 5 of PGN 126720-41: restore the factory default curve. */
 export const RESTORE_DEFAULT_CURVE = 0xfe
 
+/**
+ * The value a speed curve write takes to send `RESTORE_DEFAULT_CURVE`. The
+ * manual does not give the factory points, so what the sensor reads back
+ * afterwards is the factory curve.
+ */
+export const FACTORY_CURVE = 'factory'
+
 /** The manual documents this fixed value as the Access Level 1 password. */
 export const ACCESS_LEVEL_1_KEY = 0x12345678
 

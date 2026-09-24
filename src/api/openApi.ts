@@ -650,7 +650,18 @@ export const openApi = {
         parameters: [settingId],
         requestBody: {
           required: true,
-          ...json(object({ value: {}, qualifier: { type: 'integer', minimum: 0 } }, ['qualifier']))
+          ...json(
+            object(
+              {
+                value: {
+                  description:
+                    'The setting’s value. For `speedCurve`, a list of points, or `"factory"` to restore the curve the sensor left the factory with, which the answer then reports as read back.'
+                },
+                qualifier: { type: 'integer', minimum: 0 }
+              },
+              ['qualifier']
+            )
+          )
         },
         responses: {
           '200': { description: 'The device’s answer and what it stores', ...json(writeOutcome) },

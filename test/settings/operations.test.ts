@@ -8,7 +8,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   MAX_QUEUE_DEPTH
 } from '../../src/session/deviceSession.js'
-import { requestStandardPgn } from '../../src/protocol/codec.js'
+import { requestStandardPgn, restoreDefaultSpeedCurve } from '../../src/protocol/codec.js'
 import type { DecodedPgn } from '../../src/protocol/messages.js'
 import { AirmarPid, PGN, pidName } from '../../src/protocol/pids.js'
 
@@ -170,6 +170,52 @@ describe('settings operations', () => {
       ])
       expect(result.status === 'rejected' && result.requested).toBe(1500)
       expect(result.status === 'rejected' && result.storedMatches).toBe(false)
+    })
+
+    it('restores the factory curve and reports the curve the device then holds', async () => {
+      const pending = writeSetting(session, 'speedCurve', 'factory', undefined, now)
+      await grantUnlock()
+
+      const sent = bus.sent.filter((m) => 'fields' in m && m.fields.pgn === PGN.proprietary)
+      expect(sent).toEqual([restoreDefaultSpeedCurve(session.address)])
+
+      bus.deliver(acknowledge({}, from))
+      await flush()
+      const factory = [
+        { hz: 0, speed: 0 },
+        { hz: 50, speed: 5 }
+      ]
+      bus.deliver(curveReply(factory, from))
+
+      expect(await pending).toEqual({
+        status: 'applied',
+        stored: factory,
+        readAt: READ_AT.toISOString()
+      })
+    })
+
+    it('reports a refused restore with the curve the device kept', async () => {
+      const pending = writeSetting(session, 'speedCurve', 'factory', undefined, now)
+      await grantUnlock()
+      bus.deliver(
+        acknowledge(
+          { parameterErrors: [undefined, undefined, undefined, 'Parameter out of range'] },
+          from
+        )
+      )
+      await flush()
+      bus.deliver(curveReply([{ hz: 10, speed: 1 }], from))
+      const result = await pending
+
+      expect(result.status).toBe('rejected')
+      expect(result.status === 'rejected' && result.requested).toBe('factory')
+      // The plugin does not know the factory points, so it cannot say whether the kept curve is them.
+      expect(result).not.toHaveProperty('storedMatches')
+      expect(result.status === 'rejected' && result.readBack).toEqual({
+        status: 'answered',
+        value: [{ hz: 10, speed: 1 }],
+        readAt: READ_AT.toISOString()
+      })
     })
 
     it('reads back a curve the device refused in part, so the console can show both', async () => {

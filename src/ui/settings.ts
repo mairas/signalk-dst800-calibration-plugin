@@ -8,7 +8,7 @@
 
 import { CURVE_SPEED_RESOLUTION } from '../protocol/pids.js'
 import type { ReadResult, WriteResult } from '../types.js'
-import { curveOf } from './curve.js'
+import { FACTORY_CURVE, curveOf } from './curve.js'
 import { isRecord } from './format.js'
 import { unitFor, unitNamed, type DisplayUnit, type UnitSpec, type Units } from './units.js'
 
@@ -119,6 +119,9 @@ export function describeValue(editor: Editor, unit: DisplayUnit | null, value: u
     case 'simulate':
       return value === true ? 'on' : 'off'
     case 'curve': {
+      if (value === FACTORY_CURVE) {
+        return 'the factory curve'
+      }
       const points = curveOf(value)
       return points === null ? JSON.stringify(value) : `a ${String(points.length)}-point curve`
     }

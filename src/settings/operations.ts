@@ -146,6 +146,7 @@ export async function writeSetting(
     return detail !== undefined && detail.acknowledgedPgn === targetPgn ? detail : null
   }
 
+  const restore = entry.isRestore?.(value) === true
   const { command, read } = await session.commandThenRead(spec, (outcome) => {
     if (outcome.status === 'answered') {
       return readSpec
@@ -170,7 +171,7 @@ export async function writeSetting(
       detail: refusal,
       requested: value,
       ...(stored === undefined ? {} : { readBack: stored }),
-      ...(stored?.status === 'answered'
+      ...(stored?.status === 'answered' && !restore
         ? { storedMatches: entry.sameAsStored(value, stored.value) }
         : {})
     }
@@ -182,7 +183,8 @@ export async function writeSetting(
   if (stored.status !== 'answered') {
     return { status: 'acknowledged', readBack: stored }
   }
-  return entry.sameAsStored(value, stored.value)
+  // An acknowledged restore holds whatever the device's default is.
+  return restore || entry.sameAsStored(value, stored.value)
     ? { status: 'applied', stored: stored.value, readAt: stored.readAt }
     : { status: 'storedDiffers', requested: value, stored: stored.value, readAt: stored.readAt }
 }
