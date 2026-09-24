@@ -13,6 +13,7 @@ import type { OutgoingRaw } from './protocol/messages.js'
 import { PGN } from './protocol/pids.js'
 import { DeviceSession, type Bus } from './session/deviceSession.js'
 import type { PgnContext } from './settings/pgnIntervals.js'
+import { PgnObserver } from './settings/pgnObserver.js'
 import type { DeviceKey, DeviceResponse, DevicesResponse, ResetResult } from './types.js'
 
 /** How long a reset device has to claim an address again before the console stops waiting. */
@@ -36,6 +37,8 @@ export interface RuntimeOptions {
 export class ConsoleRuntime {
   readonly registry: DeviceRegistry
   readonly probes = new ProbeCache()
+  /** The selected device's PGN intervals and priorities, as measured on the bus. */
+  readonly observed: PgnObserver
 
   private readonly bus: Bus
   private readonly onError: (error: unknown) => void
@@ -44,12 +47,20 @@ export class ConsoleRuntime {
   private key: DeviceKey | null = null
   private connection: DeviceConnection | null = null
   private pending: { session: DeviceSession; result: Promise<ProbeResult> } | null = null
+  private readonly stopObserving: () => void
 
   constructor(options: RuntimeOptions) {
     this.bus = options.bus
     this.onError = options.onError
     this.now = options.now ?? (() => performance.now())
     this.onChange = options.onChange
+    this.observed = new PgnObserver(this.now)
+    this.stopObserving = options.bus.subscribe((frame) => {
+      const address = this.session?.address
+      if (address !== undefined && frame.src === address) {
+        this.observed.record(frame.pgn, frame.prio)
+      }
+    })
     this.registry = new DeviceRegistry({
       sources: options.sources,
       subscribe: (handler) => options.bus.subscribe(handler),
@@ -89,6 +100,7 @@ export class ConsoleRuntime {
       return
     }
     this.connection?.close()
+    this.observed.clear()
     this.key = key
     this.connection =
       key === null
@@ -162,6 +174,8 @@ export class ConsoleRuntime {
       return { status: 'notSent', reason: sent.reason }
     }
     this.probes.invalidate(key)
+    // A restore may have put every interval and priority back to its default.
+    this.observed.clear()
     // A probe still running asks a rebooting device: detach it, so it is
     // neither kept nor shared with the probe after the claim.
     this.pending = null
@@ -225,6 +239,7 @@ export class ConsoleRuntime {
   }
 
   close(): void {
+    this.stopObserving()
     this.connection?.close()
     this.connection = null
     this.registry.close()

@@ -277,7 +277,11 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     }
     const { runtime, session } = selected
     const key = runtime.selected
-    res.json(await readPgns(session, key === null ? undefined : runtime.probes.get(key)))
+    res.json(
+      await readPgns(session, key === null ? undefined : runtime.probes.get(key), (pgn) =>
+        runtime.observed.observed(pgn)
+      )
+    )
   })
 
   router.put('/api/pgns/:pgn', async (req: Request, res: Response) => {
@@ -296,6 +300,10 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     }
     const { runtime, session } = selected
     const pgn = Number(raw)
+    if (interval) {
+      // The frames timed after the write measure the new interval, not a mix of old and new.
+      runtime.observed.forget(pgn)
+    }
     const result = interval
       ? await writeInterval(runtime.pgnContext(session), pgn, fields.intervalMs)
       : await writePriority(session, pgn, fields.priority)

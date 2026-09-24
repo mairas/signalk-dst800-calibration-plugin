@@ -202,7 +202,16 @@ const pgnList = object(
           type: 'integer',
           description: '50 for a single-frame PGN, 100 for fast-packet'
         },
-        telemetry: { type: 'boolean', description: 'The plugin’s telemetry reads this PGN' }
+        telemetry: { type: 'boolean', description: 'The plugin’s telemetry reads this PGN' },
+        observedIntervalMs: {
+          type: 'integer',
+          description:
+            'The interval measured from the frames the device sent, to 10 ms; 0 while it is not sent periodically'
+        },
+        observedPriority: nullable({
+          type: 'integer',
+          description: 'The priority in the last frame’s header; null when it has not been heard'
+        })
       })
     },
     reason: { type: 'string' }

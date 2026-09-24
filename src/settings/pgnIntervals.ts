@@ -16,6 +16,7 @@ import { PGN, SINGLE_FRAME_PGNS, TRANSMIT_PGN_LIST } from '../protocol/pids.js'
 import type { DeviceSession } from '../session/deviceSession.js'
 import type { Outcome } from '../session/outcome.js'
 import { FRAMES_TO_OBSERVE, MAX_INTERVAL_MS, observationWindowMs } from './intervalLimits.js'
+import type { Observed } from './pgnObserver.js'
 
 export { MAX_INTERVAL_MS }
 
@@ -47,6 +48,10 @@ export interface PgnInfo {
   minIntervalMs: number
   /** The plugin's telemetry reads this PGN. */
   telemetry: boolean
+  /** The interval measured on the bus, to 10 ms; 0 while it is not sent periodically. */
+  observedIntervalMs: number
+  /** The priority the last frame carried; null when it has not been heard. */
+  observedPriority: number | null
 }
 
 export type PgnListResult =
@@ -88,7 +93,8 @@ const isTransmitList = (value: unknown): boolean =>
 /** The PGNs the device transmits and the probe confirmed, each once. */
 export async function readPgns(
   session: Pick<DeviceSession, 'address' | 'read'>,
-  probe: ProbeResult | undefined
+  probe: ProbeResult | undefined,
+  observed: (pgn: number) => Observed = () => ({ intervalMs: 0, priority: null })
 ): Promise<PgnListResult> {
   const outcome = await session.read({
     message: requestTransmitList(session.address),
@@ -115,11 +121,16 @@ export async function readPgns(
   const pgns = [...new Set([...outcome.value.flat(), ...probed])]
   return {
     status: 'answered',
-    pgns: pgns.map((pgn) => ({
-      pgn,
-      minIntervalMs: minIntervalMs(pgn),
-      telemetry: TELEMETRY_PGNS.includes(pgn)
-    }))
+    pgns: pgns.map((pgn) => {
+      const { intervalMs, priority } = observed(pgn)
+      return {
+        pgn,
+        minIntervalMs: minIntervalMs(pgn),
+        telemetry: TELEMETRY_PGNS.includes(pgn),
+        observedIntervalMs: intervalMs,
+        observedPriority: priority
+      }
+    })
   }
 }
 
