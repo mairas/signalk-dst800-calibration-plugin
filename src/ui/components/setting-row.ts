@@ -2,7 +2,14 @@ import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import { checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
 import { LightElement } from '../light-element.js'
-import { describeOutcome, inWords, type Editor, type Outcome } from '../settings.js'
+import {
+  describeOutcome,
+  describeValue,
+  descriptionLines,
+  inWords,
+  type Editor,
+  type Outcome
+} from '../settings.js'
 import type { DisplayUnit } from '../units.js'
 import './curve-editor.js'
 import type { RowsChange } from './curve-editor.js'
@@ -25,12 +32,6 @@ const STORED_NOTICE_MS = 4000
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
-
-const descriptionLines = (value: unknown): [string, string] => {
-  const record = isRecord(value) ? value : {}
-  const line = (key: string) => (typeof record[key] === 'string' ? record[key] : '')
-  return [line('description1'), line('description2')]
-}
 
 /** A curve's fields, two per point, back into its rows. */
 const pairs = (fields: readonly string[]): CurveRow[] =>
@@ -193,25 +194,7 @@ export class SettingRow extends LightElement {
 
   /** A value as the user reads it, in a sentence. */
   private show(value: unknown): string {
-    if (typeof value === 'number' && this.unit !== null) {
-      return `${this.unit.format(value)} ${this.unit.symbol}`
-    }
-    if (this.editor.kind === 'choice') {
-      return this.editor.options.find((o) => o.value === value)?.label ?? String(value)
-    }
-    if (this.editor.kind === 'simulate') {
-      return value === true ? 'on' : 'off'
-    }
-    if (this.editor.kind === 'curve') {
-      const points = curveOf(value)
-      return points === null ? JSON.stringify(value) : `a ${String(points.length)}-point curve`
-    }
-    if (this.editor.kind === 'description') {
-      return `“${descriptionLines(value)
-        .filter((line) => line !== '')
-        .join(' / ')}”`
-    }
-    return JSON.stringify(value)
+    return describeValue(this.editor, this.unit, value)
   }
 
   private saveButtons() {

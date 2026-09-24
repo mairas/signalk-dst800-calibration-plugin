@@ -8,7 +8,8 @@
 
 import { CURVE_SPEED_RESOLUTION } from '../protocol/pids.js'
 import type { ReadResult, WriteResult } from '../types.js'
-import type { UnitSpec } from './units.js'
+import { curveOf } from './curve.js'
+import type { DisplayUnit, UnitSpec } from './units.js'
 
 export type Editor =
   | { kind: 'number' }
@@ -98,6 +99,44 @@ export const VIEWS: Partial<Record<string, SettingView>> = {
   }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** The installation description's two lines. */
+export const descriptionLines = (value: unknown): [string, string] => {
+  const record = isRecord(value) ? value : {}
+  const line = (key: string) => (typeof record[key] === 'string' ? record[key] : '')
+  return [line('description1'), line('description2')]
+}
+
+/** A setting's value as the user reads it, in a sentence, in the user's units. */
+export function describeValue(editor: Editor, unit: DisplayUnit | null, value: unknown): string {
+  const inUnit = (si: unknown) =>
+    typeof si === 'number' && unit !== null ? `${unit.format(si)} ${unit.symbol}` : '—'
+  switch (editor.kind) {
+    case 'number':
+      return typeof value === 'number' ? inUnit(value) : JSON.stringify(value)
+    case 'choice':
+      return editor.options.find((o) => o.value === value)?.label ?? String(value)
+    case 'simulate':
+      return value === true ? 'on' : 'off'
+    case 'curve': {
+      const points = curveOf(value)
+      return points === null ? JSON.stringify(value) : `a ${String(points.length)}-point curve`
+    }
+    case 'description':
+      return `“${descriptionLines(value)
+        .filter((line) => line !== '')
+        .join(' / ')}”`
+    case 'tripReset': {
+      const log = isRecord(value) ? value : {}
+      return `trip ${inUnit(log.tripLog)}, total ${inUnit(log.log)}`
+    }
+    case 'filter':
+      return JSON.stringify(value)
+  }
+}
+
 /** The console's sections, in page order. */
 export const SECTIONS: readonly { id: string; title: string; settings: readonly string[] }[] = [
   { id: 'depth', title: 'Depth', settings: ['depthOffset', 'speedOfSound'] },
@@ -107,7 +146,8 @@ export const SECTIONS: readonly { id: string; title: string; settings: readonly 
   { id: 'log', title: 'Distance log', settings: ['distanceLog'] },
   { id: 'network', title: 'NMEA 2000 output', settings: ['transmissionIntervalOverride'] },
   { id: 'installation', title: 'Installation', settings: ['installationDescription'] },
-  { id: 'maintenance', title: 'Maintenance', settings: ['simulateMode'] }
+  { id: 'maintenance', title: 'Maintenance', settings: ['simulateMode'] },
+  { id: 'snapshots', title: 'Snapshots', settings: [] }
 ]
 
 /**

@@ -28,6 +28,7 @@ import { SI, unitFor, type DisplayUnit, type Units } from '../units.js'
 import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
 import './pgn-table.js'
+import './snapshot-panel.js'
 import type { RestoreRequest } from './pgn-table.js'
 
 /** How often the read age moves on screen. */
@@ -38,6 +39,9 @@ const PRODUCT = 'productInformation'
 
 /** The section that holds the transmitted PGNs, below its settings. */
 const PGN_SECTION = 'network'
+
+/** The section that saves and loads snapshots rather than listing settings. */
+const SNAPSHOT_SECTION = 'snapshots'
 
 /** Its setting that decides whether the intervals set per PGN apply. */
 const OVERRIDE = 'transmissionIntervalOverride'
@@ -398,6 +402,18 @@ export class SettingsPanel extends LightElement {
   }
 
   private section(id: string, title: string, settings: readonly string[]) {
+    if (id === SNAPSHOT_SECTION) {
+      return html`
+        <section id=${id} class="card mb-3" aria-labelledby=${`${id}-title`}>
+          <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
+          <dst-snapshots
+            .selected=${this.selected}
+            .units=${this.units}
+            .disabled=${!this.present}
+          ></dst-snapshots>
+        </section>
+      `
+    }
     const infos = (this.infos ?? []).filter(
       (info) => settings.includes(info.id) && info.available !== 'no'
     )
