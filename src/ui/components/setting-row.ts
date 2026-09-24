@@ -83,6 +83,10 @@ export class SettingRow extends LightElement {
       this.confirming = false
       this.understood = false
     }
+    if (changed.has('draft') && this.editor.kind === 'curve' && this.dirty) {
+      // The restore would drop the edit, and an export now would save the edit, not the sensor's curve.
+      this.confirming = false
+    }
     const previous = changed.get('row') as RowState | undefined
     if (previous === undefined || previous.outcome === this.row.outcome) {
       return
@@ -303,21 +307,28 @@ export class SettingRow extends LightElement {
   /** Put back the curve the sensor left the factory with, after a confirmation. */
   private factoryControl() {
     if (!this.confirming) {
-      return html`<button
-        type="button"
-        class="btn btn-sm btn-outline-secondary mt-2"
-        ?disabled=${this.blocked}
-        @click=${() => {
-          this.confirming = true
-        }}
-      >
-        Restore factory curve…
-      </button>`
+      return html`<div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+        <button
+          type="button"
+          class="btn btn-sm btn-outline-secondary"
+          ?disabled=${this.blocked || this.dirty}
+          @click=${() => {
+            this.confirming = true
+          }}
+        >
+          Restore factory curve…
+        </button>
+        ${
+          this.dirty
+            ? html`<span class="small text-body-secondary">Save or cancel the edit first.</span>`
+            : nothing
+        }
+      </div>`
     }
     return html`<div class="bg-warning-subtle border border-warning-subtle rounded p-3 mt-2">
       <p class="mb-2">
         This replaces the curve on the sensor with the one it left the factory with; the table then
-        shows it. <a href="#snapshots">Export the settings</a> or the curve first to keep this one.
+        shows it. <a href="#snapshots">Export the settings</a> first to keep this one.
       </p>
       <button
         type="button"
@@ -325,7 +336,6 @@ export class SettingRow extends LightElement {
         ?disabled=${this.blocked}
         @click=${() => {
           this.confirming = false
-          this.draft = null
           this.emitWrite(FACTORY_CURVE)
         }}
       >
@@ -711,7 +721,13 @@ export class SettingRow extends LightElement {
     if (outcome.kind === 'stored' && this.storedNoticeGone) {
       return nothing
     }
-    if (this.editor.kind === 'curve' && outcome.kind === 'refused' && outcome.fields.length > 0) {
+    // A restore sends one field, so naming it would hide that the restore failed.
+    if (
+      this.editor.kind === 'curve' &&
+      outcome.kind === 'refused' &&
+      outcome.fields.length > 0 &&
+      outcome.requested !== FACTORY_CURVE
+    ) {
       const text = outcome.fields.map((f) => `${f.field}: ${inWords([f.error])}`).join('; ')
       return html`<div class="small mt-1 text-danger-emphasis" role="status">
         The sensor refused ${text}.

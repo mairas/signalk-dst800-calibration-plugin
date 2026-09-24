@@ -55,12 +55,14 @@ function curveDevice(
     onWrite?: (value: unknown) => WriteResult
     bodies?: unknown[]
     reads?: string[]
+    /** Holds each write's answer until it resolves. */
+    answer?: Promise<void>
   } = {}
 ) {
   let held: unknown = options.held ?? HELD
   serve(
     selected(),
-    (path, init) => {
+    async (path, init) => {
       if ((init?.method ?? 'GET') === 'GET' && path === '/settings/speedCurve') {
         options.reads?.push(path)
         return json(answered(held))
@@ -68,6 +70,7 @@ function curveDevice(
       if (init?.method === 'PUT' && path === '/settings/speedCurve') {
         const body = JSON.parse(init.body as string) as { value: unknown }
         options.bodies?.push(body.value)
+        await options.answer
         const result = options.onWrite?.(body.value) ?? {
           status: 'applied',
           stored: body.value,
@@ -401,6 +404,83 @@ describe('speed curve', () => {
       expect(text(curve(el))).toContain(
         'The sensor refused the factory curve: it needs Level 1 access.'
       )
+    })
+
+    it('names the factory curve, not a field, when the sensor refuses the restore', async () => {
+      curveDevice({
+        onWrite: (value) => ({
+          status: 'rejected',
+          reason: 'Parameter out of range',
+          refusedFields: [{ field: 'point count', error: 'Parameter out of range' }],
+          detail: {
+            acknowledgedPgn: 126720,
+            src: 22,
+            ok: false,
+            pgnError: 'Acknowledge',
+            intervalPriorityError: 'Acknowledge',
+            parameterErrors: [{ index: 1, error: 'Parameter out of range' }],
+            missingParameterCodes: 0
+          },
+          requested: value
+        })
+      })
+      const el = await open()
+
+      button(curve(el), 'Restore factory curve…').click()
+      await settle()
+      button(curve(el), 'Restore factory curve').click()
+      await settle()
+
+      expect(text(curve(el))).toContain('The sensor refused the factory curve')
+      expect(text(curve(el))).not.toContain('point count')
+    })
+
+    it('cannot restore over an unsaved edit, which an export would save instead of the sensor’s curve', async () => {
+      curveDevice()
+      const el = await open()
+
+      await type(cells(el)[1][1], '2.50')
+
+      expect(button(curve(el), 'Restore factory curve…').disabled).toBe(true)
+      expect(text(curve(el))).toContain('Save or cancel the edit first')
+    })
+
+    it('closes the confirmation when the table is edited', async () => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      button(curve(el), 'Restore factory curve…').click()
+      await settle()
+      await type(cells(el)[1][1], '2.50')
+
+      expect(text(curve(el))).not.toContain('replaces the curve on the sensor')
+      expect(bodies).toEqual([])
+    })
+
+    it('leaves another sensor’s row alone when a restore is answered after the switch', async () => {
+      let release: () => void = () => undefined
+      const answer = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      curveDevice({
+        answer,
+        onWrite: () => ({ status: 'applied', stored: FACTORY, readAt: READ_AT })
+      })
+      const el = await open()
+      const before = values(el)
+
+      button(curve(el), 'Restore factory curve…').click()
+      await settle()
+      button(curve(el), 'Restore factory curve').click()
+      await settle()
+      FakeEventSource.latest.push({ type: 'device', data: selected({ selected: OTHER }) })
+      await settle()
+      release()
+      await settle()
+
+      expect(values(el)).toEqual(before)
+      expect(text(curve(el))).not.toContain('Stored')
     })
 
     it('cannot restore while the sensor is off the bus', async () => {
