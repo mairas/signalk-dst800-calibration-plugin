@@ -413,7 +413,7 @@ export const openApi = {
   paths: {
     '/api/devices': {
       get: {
-        summary: 'Every NMEA 2000 device the server knows, configurable or not',
+        summary: 'The devices heard sending Airmar’s own messages, whatever brand they claim',
         responses: {
           '200': {
             description: 'Candidates',

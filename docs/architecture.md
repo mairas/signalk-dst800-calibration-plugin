@@ -76,7 +76,7 @@ Frames on `N2KAnalyzerOut` carry no provider label, so the registry and the sess
 
 **Presence comes only from frames heard since start**, never from the tree. A device is present for 10 s after its last frame of any PGN, ten periods of the DST's 1 s default rate. The registry rereads the tree every second, which is how it catches both a silence, which sends nothing to react to, and a tree update that lands after the claim that caused it.
 
-**Do not filter candidates by manufacturer.** Rebadged Airmar hardware claims its brand's code and still speaks Airmar's protocol. Whether a device is configurable is the probe's answer.
+**The device list holds only devices heard speaking Airmar's protocol**: sending one of its periodic proprietary messages (65408–65410) with manufacturer code 135 inside the frame. The PGN numbers alone say nothing, because 65280–65535 is shared by every manufacturer. Do not filter on the Address Claim's manufacturer: rebadged Airmar hardware claims its brand's code. A device qualifies from its first such frame since start and stays listed; a claim at its address clears only which device the address belongs to, so a device that takes the address over does not inherit the mark. The change signature covers every device, not just the listed ones, because the connection follows a selected device through `onChange` whether or not it has spoken yet. Whether a listed device is configurable is still the probe's answer.
 
 A session is bound to one address, so `DeviceConnection` closes it when the device moves and builds a new one, telling every waiting caller where the device went. A silence at the same address keeps the session.
 

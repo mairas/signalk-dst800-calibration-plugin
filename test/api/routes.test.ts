@@ -85,6 +85,10 @@ describe('REST API', () => {
   const heard = () => {
     deliver(pgnReply(PGN.distanceLog, { src: DST.address }))
   }
+  /** One of Airmar's own periodic messages from the DST, which puts it in the device list. */
+  const speaksAirmar = () => {
+    deliver(pgnReply(PGN.depthQualityFactor, { src: DST.address }))
+  }
   const flush = () => vi.advanceTimersByTimeAsync(0)
   const depthReply = (offset: number): DecodedPgn => ({
     ...decode({ pgn: PGN.waterDepth, dst: 255, prio: 3, fields: { sid: 1, depth: 12, offset } }),
@@ -219,7 +223,7 @@ describe('REST API', () => {
   describe('response shapes', () => {
     it('answers each list and selection with the fields the document names', async () => {
       start({ selectedDevice: DST_KEY })
-      heard()
+      speaksAirmar()
       const devices = (await call('get', '/api/devices')).body as { candidates: unknown[] }
       const settings = (await call('get', '/api/settings')).body as { settings: unknown[] }
 
@@ -261,13 +265,17 @@ describe('REST API', () => {
   })
 
   describe('devices', () => {
-    it('lists the devices in the sources tree', async () => {
+    it('lists only the devices heard speaking Airmar’s protocol', async () => {
+      app.sources = sourcesTree([DST, { ...DST, address: 40, uniqueNumber: 9, modelId: 'X' }])
       start()
-      const response = await call('get', '/api/devices')
 
-      expect(response.body).toMatchObject({
+      expect((await call('get', '/api/devices')).body).toEqual({ candidates: [] })
+
+      speaksAirmar()
+
+      expect((await call('get', '/api/devices')).body).toMatchObject({
         candidates: [
-          { key: DST_KEY, modelId: 'DST800', location: { state: 'waiting', address: 22 } }
+          { key: DST_KEY, modelId: 'DST800', location: { state: 'present', address: 22 } }
         ]
       })
     })
@@ -1122,7 +1130,7 @@ describe('REST API', () => {
     it('pushes the device list when a model arrives after the claim', async () => {
       app.sources = sourcesTree([{ ...DST, modelId: undefined }])
       start({ selectedDevice: DST_KEY })
-      heard()
+      speaksAirmar()
       const { stream } = openStream()
       app.sources = sourcesTree([DST])
       await vi.advanceTimersByTimeAsync(1_000)

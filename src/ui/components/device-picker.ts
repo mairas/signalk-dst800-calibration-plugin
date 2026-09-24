@@ -6,10 +6,9 @@ import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 
 /**
- * Every NMEA 2000 device the server knows, to pick the sensor to configure.
- *
- * Not filtered by manufacturer: rebadged Airmar hardware claims its brand's
- * code. Whether a device is configurable is the probe's answer.
+ * The devices heard speaking Airmar's protocol, to pick the sensor to
+ * configure. The plugin does the filtering; whether a device is configurable
+ * is the probe's answer.
  *
  * Fires `select` with the chosen `DeviceKey` as its detail.
  */
@@ -26,7 +25,7 @@ export class DevicePicker extends LightElement {
   override render() {
     if (this.candidates.length === 0) {
       return html`<p class="text-body-secondary">
-        The server has not heard any NMEA 2000 device yet.
+        No Airmar sensor has been heard on the bus yet.
       </p>`
     }
     return html`
