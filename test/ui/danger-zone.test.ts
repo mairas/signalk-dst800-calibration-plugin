@@ -169,7 +169,9 @@ describe('danger zone', () => {
     await settle()
 
     expect(sent).toEqual([{ method: 'POST', path: '/device/reset', body: undefined }])
-    expect(text(zone(el))).toContain('✓ The sensor restarted.')
+    expect(text(zone(el))).toContain(
+      'Sent. The sensor claimed its address again, as it does after a restart.'
+    )
   })
 
   it('restores factory settings only once the confirmation is typed exactly', async () => {
@@ -195,7 +197,12 @@ describe('danger zone', () => {
     await settle()
 
     expect(sent).toEqual([{ method: 'POST', path: '/device/restore', body: { option: 'all' } }])
-    expect(text(zone(el))).toContain('✓ Factory settings restored. The sensor restarted.')
+    expect(text(zone(el))).toContain(
+      'Sent. The sensor claimed its address again, as it does after a restart.'
+    )
+    expect(text(zone(el))).toContain('read again to show what it now holds')
+    // A claim is not proof of a restore, so the console does not say it was restored.
+    expect(text(zone(el))).not.toContain('restored')
   })
 
   it('asks for the word again after Cancel', async () => {
@@ -262,7 +269,9 @@ describe('danger zone', () => {
     restart.answer({ status: 'claimed', probe })
     await settle()
 
-    expect(text(zone(el))).toContain('✓ The sensor restarted.')
+    expect(text(zone(el))).toContain(
+      'Sent. The sensor claimed its address again, as it does after a restart.'
+    )
   })
 
   it('says the sensor did not come back, although no section is left to say it in', async () => {
@@ -311,16 +320,16 @@ describe('danger zone', () => {
 
     await askToRestart(el)
 
-    expect(text(zone(el))).toContain('The sensor restarted')
-    expect(text(el.querySelector('#network'))).not.toContain('restarted')
+    expect(text(zone(el))).toContain('claimed its address again')
+    expect(text(el.querySelector('#network'))).not.toContain('claimed its address')
 
     button(el.querySelector('#network') ?? el, 'Restore default priorities…').click()
     await settle()
     button(el.querySelector('#network') ?? el, 'Restore and restart').click()
     await settle()
 
-    expect(text(el.querySelector('#network'))).toContain('Restored. The sensor restarted.')
-    expect(text(zone(el))).not.toContain('restarted')
+    expect(text(el.querySelector('#network'))).toContain('claimed its address again')
+    expect(text(zone(el))).not.toContain('claimed its address')
   })
 
   it('offers no second restart while one is in flight', async () => {
@@ -351,33 +360,33 @@ describe('danger zone', () => {
     expect(text(zone(el))).toContain('The sensor may have restarted')
   })
 
-  it('says Not sent only for a refusal the plugin answered before sending', async () => {
-    sensor({
-      onRestart: () =>
-        new Response(JSON.stringify({ error: 'The sensor is not on the bus.' }), {
-          status: 503,
-          statusText: 'Service Unavailable',
-          headers: { 'Content-Type': 'application/json' }
-        })
-    })
-    const el = await open()
+  it.each([
+    [
+      503,
+      'Service Unavailable',
+      'The sensor is not on the bus.',
+      'Not sent: The sensor is not on the bus.'
+    ],
+    [400, 'Bad Request', 'Send an option', 'Not sent: Send an option.'],
+    [502, 'Bad Gateway', 'Upstream failed', 'The console lost the answer: Upstream failed.']
+  ])(
+    'reports a %i before or after the send accordingly',
+    async (status, statusText, error, words) => {
+      sensor({
+        onRestart: () =>
+          new Response(JSON.stringify({ error }), {
+            status,
+            statusText,
+            headers: { 'Content-Type': 'application/json' }
+          })
+      })
+      const el = await open()
 
-    await askToRestart(el)
+      await askToRestart(el)
 
-    expect(text(zone(el))).toContain('The console lost the answer')
-
-    sensor({
-      onRestart: () =>
-        new Response(JSON.stringify({ error: 'Send { "option": … }' }), {
-          status: 409,
-          statusText: 'Conflict',
-          headers: { 'Content-Type': 'application/json' }
-        })
-    })
-    await askToRestart(el)
-
-    expect(text(zone(el))).toContain('Not sent: Send { "option": … }.')
-  })
+      expect(text(zone(el))).toContain(words)
+    }
+  )
 
   it.each([
     [{ status: 'notSent', reason: 'Level 1 was refused' }, 'Not sent: Level 1 was refused.'],
@@ -408,7 +417,7 @@ describe('danger zone', () => {
     restart.answer({ status: 'claimed', probe })
     await settle()
 
-    expect(text(zone(el))).not.toContain('restarted')
+    expect(text(zone(el))).not.toContain('claimed its address')
   })
 
   it('disables every restart control while the sensor is off the bus', async () => {

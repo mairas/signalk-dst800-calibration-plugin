@@ -43,11 +43,18 @@ export function routeOf(action: RestartAction): { path: string; body?: { option:
     : { path: '/device/restore', body: { option: action } }
 }
 
+/**
+ * What `claimed` says. A sensor also claims its address when another display
+ * asks, so the claim is not proof that it restarted or restored anything; the
+ * settings read afterwards show what it holds.
+ */
+const CLAIMED = 'Sent. The sensor claimed its address again, as it does after a restart.'
+
 const DONE: Record<RestartAction, string> = {
-  reset: '✓ The sensor restarted.',
-  all: '✓ Factory settings restored. The sensor restarted.',
-  updateRates: '✓ Restored. The sensor restarted.',
-  priorities: '✓ Restored. The sensor restarted.'
+  reset: CLAIMED,
+  all: `${CLAIMED} Its settings are read again to show what it now holds.`,
+  updateRates: CLAIMED,
+  priorities: CLAIMED
 }
 
 /** What an action's result says. */

@@ -52,6 +52,9 @@ const PRODUCT = 'productInformation'
 /** The first status that says the server failed rather than refused. */
 const SERVER_ERROR = 500
 
+/** The plugin's answer when the sensor is not on the bus, before anything is sent. */
+const SERVICE_UNAVAILABLE = 503
+
 /** The section that holds the transmitted PGNs, below its settings. */
 const PGN_SECTION = 'network'
 
@@ -262,9 +265,12 @@ export class SettingsPanel extends LightElement {
     try {
       result = await request<ResetResult>('POST', path, body)
     } catch (cause) {
-      // The plugin refuses before sending with a 4xx. Anything else, a lost
-      // connection included, may come after the frame went out.
-      const refused = cause instanceof ApiError && cause.status < SERVER_ERROR
+      // The plugin refuses before sending with a 4xx, or a 503 when the sensor
+      // is not on the bus. Anything else, a lost connection included, may come
+      // after the frame went out.
+      const refused =
+        cause instanceof ApiError &&
+        (cause.status < SERVER_ERROR || cause.status === SERVICE_UNAVAILABLE)
       result = refused
         ? { status: 'notSent', reason: describeFailure(cause) }
         : { status: 'unanswered', reason: describeFailure(cause) }
