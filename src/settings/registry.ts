@@ -19,6 +19,7 @@ import {
   decodeSpeedCurve,
   requestProprietary,
   requestStandardPgn,
+  restoreDefaultSpeedCurve,
   setSpeedCurve,
   type CurvePoint
 } from '../protocol/codec.js'
@@ -28,6 +29,7 @@ import {
   CURVE_FIRST_PAIR_PARAM,
   CURVE_HZ_RESOLUTION,
   CURVE_SPEED_RESOLUTION,
+  FACTORY_CURVE,
   MAX_CURVE_POINTS,
   PGN,
   pidFromName
@@ -344,7 +346,7 @@ const TRIP_LOG_RESOLUTION = 1
  */
 const MAX_TRIP_LOG_DRIFT = 100
 
-const speedCurve: Setting<CurvePoint[], CurvePoint[]> = {
+const speedCurve: Setting<CurvePoint[], CurvePoint[] | typeof FACTORY_CURVE> = {
   id: 'speedCurve',
   requirement: 'R9',
   capability: { kind: 'pid', pid: AirmarPid.CalibrateSpeed },
@@ -356,8 +358,13 @@ const speedCurve: Setting<CurvePoint[], CurvePoint[]> = {
     match: decodeSpeedCurve
   }),
   parse: (input) => {
+    if (input === FACTORY_CURVE) {
+      return ok(FACTORY_CURVE)
+    }
     if (!Array.isArray(input) || input.length > MAX_CURVE_POINTS) {
-      return fail(`A curve is a list of 1 to ${String(MAX_CURVE_POINTS)} points`)
+      return fail(
+        `A curve is a list of 1 to ${String(MAX_CURVE_POINTS)} points, or "${FACTORY_CURVE}"`
+      )
     }
     const points: CurvePoint[] = []
     for (const [index, point] of input.entries()) {
@@ -375,14 +382,16 @@ const speedCurve: Setting<CurvePoint[], CurvePoint[]> = {
     }
     return ok(points)
   },
-  command: (address, value) => setSpeedCurve(address, value),
+  command: (address, value) =>
+    value === FACTORY_CURVE ? restoreDefaultSpeedCurve(address) : setSpeedCurve(address, value),
   sameAsStored: (requested, stored) =>
-    requested.length === stored.length &&
-    requested.every(
-      (point, i) =>
-        sameAt(CURVE_HZ_RESOLUTION, point.hz, stored[i].hz) &&
-        sameAt(CURVE_SPEED_RESOLUTION, point.speed, stored[i].speed)
-    ),
+    requested === FACTORY_CURVE ||
+    (requested.length === stored.length &&
+      requested.every(
+        (point, i) =>
+          sameAt(CURVE_HZ_RESOLUTION, point.hz, stored[i].hz) &&
+          sameAt(CURVE_SPEED_RESOLUTION, point.speed, stored[i].speed)
+      )),
   // Field 5 is the point count, then each point is a frequency and speed pair.
   fieldName: (parameter) => {
     if (parameter === 5) {
