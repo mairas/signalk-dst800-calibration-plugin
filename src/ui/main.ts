@@ -6,28 +6,15 @@ import type {
   DeviceResponse,
   DevicesResponse,
   ProbeResult,
-  ReadResult,
-  ServerEvent,
-  WriteResult
+  ServerEvent
 } from '../types.js'
 import { describeFailure, followEvents, request } from './api.js'
 import './components/device-picker.js'
 import './components/device-status.js'
+import './components/settings-panel.js'
 import { sameKey } from './format.js'
 import { LightElement } from './light-element.js'
-
-/** What a read or write of simulate mode says the device now holds, or null when it says nothing. */
-function simulateValueOf(result: ReadResult | WriteResult): boolean | null {
-  const value =
-    result.status === 'answered'
-      ? result.value
-      : result.status === 'applied' || result.status === 'storedDiffers'
-        ? result.stored
-        : 'readBack' in result && result.readBack?.status === 'answered'
-          ? result.readBack.value
-          : null
-  return typeof value === 'boolean' ? value : null
-}
+import { storedValueOf } from './settings.js'
 
 @customElement('dst-app')
 export class DstApp extends LightElement {
@@ -113,12 +100,16 @@ export class DstApp extends LightElement {
       case 'device':
         this.showDevice(event.data)
         break
-      case 'setting':
+      case 'setting': {
         if (event.data.id === 'simulateMode') {
-          this.simulating = simulateValueOf(event.data.result) ?? this.simulating
+          const stored = storedValueOf(event.data.result)?.value
+          this.simulating = typeof stored === 'boolean' ? stored : this.simulating
         }
+        this.querySelector('dst-settings')?.apply(event.data)
         break
+      }
       case 'reset':
+        this.querySelector('dst-settings')?.forget()
         break
     }
   }
@@ -187,20 +178,23 @@ export class DstApp extends LightElement {
         }
         ${
           this.streamLost
-            ? html`<p class="text-warning">Live updates lost, reconnecting…</p>`
+            ? html`<p class="text-warning-emphasis">Live updates lost, reconnecting…</p>`
             : nothing
         }
         ${
           hasDevice
             ? html`<section class="mb-4" aria-label="Selected sensor">
-                <dst-device-status
-                  .device=${this.device}
-                  .candidate=${this.selectedCandidate()}
-                  .probing=${this.probing}
-                  .probeError=${this.probeError}
-                  @probe=${() => this.probe()}
-                ></dst-device-status>
-              </section>`
+                  <dst-device-status
+                    .device=${this.device}
+                    .candidate=${this.selectedCandidate()}
+                    .probing=${this.probing}
+                    .probeError=${this.probeError}
+                    @probe=${() => this.probe()}
+                  ></dst-device-status>
+                </section>
+                <section class="mb-4" aria-label="Settings">
+                  <dst-settings .device=${this.device} @probe=${() => this.probe()}></dst-settings>
+                </section>`
             : html`<p class="lead">Choose the sensor to configure.</p>`
         }
         <details ?open=${!hasDevice}>

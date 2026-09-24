@@ -1,131 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type {
-  Candidate,
-  DeviceResponse,
-  DevicesResponse,
-  ProbeResult,
-  ServerEvent
-} from '../../src/types.js'
-import { API_BASE, RECONNECT_MS } from '../../src/ui/api.js'
+import { RECONNECT_MS } from '../../src/ui/api.js'
 import '../../src/ui/main.js'
-
-/** Stands in for the browser's EventSource; each instance is one connection. */
-class FakeEventSource {
-  static instances: FakeEventSource[] = []
-  onopen: (() => void) | null = null
-  onerror: (() => void) | null = null
-  closed = false
-  private readonly listeners = new Map<string, ((message: MessageEvent<string>) => void)[]>()
-
-  constructor(readonly url: string) {
-    FakeEventSource.instances.push(this)
-  }
-
-  addEventListener(type: string, listener: (message: MessageEvent<string>) => void): void {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
-  }
-
-  close(): void {
-    this.closed = true
-  }
-
-  push(event: ServerEvent): void {
-    for (const listener of this.listeners.get(event.type) ?? []) {
-      listener(new MessageEvent(event.type, { data: JSON.stringify(event.data) }))
-    }
-  }
-
-  static get latest(): FakeEventSource {
-    const latest = FakeEventSource.instances.at(-1)
-    if (latest === undefined) {
-      throw new Error('No event stream was opened')
-    }
-    return latest
-  }
-}
-
-const DST = { manufacturerCode: 135, uniqueNumber: 123456 }
-const OTHER = { manufacturerCode: 137, uniqueNumber: 42 }
-
-const candidates: Candidate[] = [
-  {
-    key: DST,
-    location: { state: 'present', address: 22 },
-    manufacturerName: 'Airmar',
-    modelId: 'DST800',
-    serial: '0123456'
-  },
-  {
-    key: OTHER,
-    location: { state: 'present', address: 35 },
-    manufacturerName: 'Maretron',
-    modelId: 'DSM150',
-    serial: null
-  }
-]
-
-const probe: ProbeResult = {
-  level1: { state: 'granted' },
-  capabilities: [
-    { capability: { kind: 'pid', pid: 41 }, result: { state: 'supported' } },
-    { capability: { kind: 'pid', pid: 40 }, result: { state: 'noAnswer', reason: 'No answer' } }
-  ],
-  configurable: 'yes',
-  interrupted: false
-}
-
-const selected = (overrides: Partial<DeviceResponse> = {}): DeviceResponse => ({
-  selected: DST,
-  location: { state: 'present', address: 22 },
-  access: { state: 'locked' },
-  probe: null,
-  ...overrides
-})
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
-
-/** Answer GET /devices and /device, and any other request by `other`. */
-function serve(
-  device: DeviceResponse,
-  other?: (path: string, init?: RequestInit) => Response | Promise<Response>
-) {
-  vi.mocked(fetch).mockImplementation((input, init) => {
-    const path = (input as string).slice(API_BASE.length)
-    const method = init?.method ?? 'GET'
-    if (method === 'GET' && path === '/devices') {
-      return Promise.resolve(json({ candidates } satisfies DevicesResponse))
-    }
-    if (method === 'GET' && path === '/device') {
-      return Promise.resolve(json(device))
-    }
-    if (other !== undefined) {
-      return Promise.resolve(other(path, init))
-    }
-    return Promise.reject(new Error(`Unexpected ${method} ${path}`))
-  })
-}
-
-const settle = async () => {
-  await vi.advanceTimersByTimeAsync(0)
-}
-
-const mount = async () => {
-  const el = document.createElement('dst-app')
-  document.body.appendChild(el)
-  await settle()
-  return el
-}
-
-const text = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ')
-
-const button = (el: Element, label: string): HTMLButtonElement => {
-  const found = [...el.querySelectorAll('button')].find((b) => b.textContent.trim() === label)
-  if (found === undefined) {
-    throw new Error(`No button labelled ${label}`)
-  }
-  return found
-}
+import {
+  FakeEventSource,
+  OTHER,
+  button,
+  json,
+  mount,
+  probe,
+  selected,
+  serve,
+  settle,
+  text
+} from './helpers.js'
+import type { ServerEvent } from '../../src/types.js'
 
 describe('dst-app', () => {
   beforeEach(() => {
