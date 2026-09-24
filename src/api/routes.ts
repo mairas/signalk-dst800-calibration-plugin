@@ -32,6 +32,15 @@ import { readPgns, writeInterval, writePriority } from '../settings/pgnIntervals
 import { MAX_PGN } from '../protocol/pids.js'
 import { SETTINGS, isSettingId, type AnySetting } from '../settings/registry.js'
 import {
+  applyImport,
+  parseSnapshot,
+  planImport,
+  takeSnapshot,
+  type SettingIo,
+  type Snapshot
+} from '../snapshots/snapshot.js'
+import type { DeviceSession } from '../session/deviceSession.js'
+import {
   deviceKeyOf,
   type DeviceKey,
   type ServerEvent,
@@ -120,6 +129,12 @@ function settingInfo(entry: AnySetting, runtime: ConsoleRuntime): SettingInfo {
   }
 }
 
+interface Selected {
+  runtime: ConsoleRuntime
+  session: DeviceSession
+  key: DeviceKey
+}
+
 export function registerRoutes(router: PluginRouter, context: RouteContext): void {
   const readonly = router.access('readonly')
 
@@ -133,12 +148,13 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
   }
 
   /** The running console and the selected device's session, or the right error already sent. */
-  const sessionOf = (res: Response) => {
+  const sessionOf = (res: Response): Selected | null => {
     const runtime = running(res)
     if (runtime === null) {
       return null
     }
-    if (runtime.selected === null) {
+    const key = runtime.selected
+    if (key === null) {
       error(res, 409, NO_DEVICE)
       return null
     }
@@ -147,8 +163,36 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
       error(res, 503, NOT_PRESENT)
       return null
     }
-    return { runtime, session }
+    return { runtime, session, key }
   }
+
+  /** Reads and writes through `session`, each pushed to the open consoles once it reached the session. */
+  const settingIo = (session: DeviceSession): SettingIo => ({
+    read: async (id, qualifier) => {
+      const result = await readSetting(session, id, qualifier)
+      if (result.status !== 'invalid') {
+        context.publish({
+          type: 'setting',
+          data: { id, qualifier: qualifier ?? null, operation: 'read', result }
+        })
+      }
+      return result
+    },
+    write: async (id, value, qualifier) => {
+      const result = await writeSetting(session, id, value, qualifier)
+      if (result.status !== 'invalid') {
+        context.publish({
+          type: 'setting',
+          data: { id, qualifier: qualifier ?? null, operation: 'write', result }
+        })
+      }
+      return result
+    }
+  })
+
+  /** The selected device's cached probe, or a fresh one. */
+  const probeOf = ({ runtime, session, key }: Selected) =>
+    runtime.probes.get(key) ?? runtime.probe(session)
 
   readonly.get('/api/devices', (_req: Request, res: Response) => {
     const runtime = running(res)
@@ -285,15 +329,11 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     if (selected === null) {
       return
     }
-    const result = await readSetting(selected.session, id, qualifier.value)
+    const result = await settingIo(selected.session).read(id, qualifier.value)
     if (result.status === 'invalid') {
       error(res, 400, result.reason)
       return
     }
-    context.publish({
-      type: 'setting',
-      data: { id, qualifier: qualifier.value ?? null, operation: 'read', result }
-    })
     res.json(result)
   })
 
@@ -318,16 +358,59 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     if (selected === null) {
       return
     }
-    const result = await writeSetting(selected.session, id, value, qualifier.value)
+    const result = await settingIo(selected.session).write(id, value, qualifier.value)
     if (result.status === 'invalid') {
       error(res, 400, result.reason)
       return
     }
-    context.publish({
-      type: 'setting',
-      data: { id, qualifier: qualifier.value ?? null, operation: 'write', result }
-    })
     res.json(result)
+  })
+
+  router.get('/api/snapshot', async (_req: Request, res: Response) => {
+    const selected = sessionOf(res)
+    if (selected === null) {
+      return
+    }
+    const probe = await probeOf(selected)
+    const snapshot: Snapshot = await takeSnapshot(
+      settingIo(selected.session),
+      selected.key,
+      probe,
+      () => new Date()
+    )
+    res.json(snapshot)
+  })
+
+  /** Check the snapshot in the body and find the selected device, or send the error. */
+  const importOf = async (req: Request, res: Response) => {
+    const snapshot = parseSnapshot(req.body)
+    if (!snapshot.ok) {
+      error(res, 400, snapshot.error)
+      return null
+    }
+    const selected = sessionOf(res)
+    if (selected === null) {
+      return null
+    }
+    return {
+      io: settingIo(selected.session),
+      snapshot: snapshot.value,
+      probe: await probeOf(selected)
+    }
+  }
+
+  router.post('/api/snapshot/diff', async (req: Request, res: Response) => {
+    const found = await importOf(req, res)
+    if (found !== null) {
+      res.json(await planImport(found.io, found.snapshot, found.probe))
+    }
+  })
+
+  router.post('/api/snapshot/import', async (req: Request, res: Response) => {
+    const found = await importOf(req, res)
+    if (found !== null) {
+      res.json(await applyImport(found.io, found.snapshot, found.probe))
+    }
   })
 
   readonly.get('/api/events', (req: Request, res: Response) => {

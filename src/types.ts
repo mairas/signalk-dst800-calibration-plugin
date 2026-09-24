@@ -7,6 +7,13 @@ export type { Candidate, Location } from './devices/registry.js'
 export type { ProbeResult } from './devices/probe.js'
 export type { ReadResult, WriteResult } from './settings/operations.js'
 export type { PgnInfo, PgnListResult, PgnWriteResult } from './settings/pgnIntervals.js'
+export type {
+  ImportItem,
+  ImportPlan,
+  ImportResult,
+  ImportResultItem,
+  Snapshot
+} from './snapshots/snapshot.js'
 
 /** Widths of the two Address Claim NAME fields a device key is made of. */
 export const UNIQUE_NUMBER_BITS = 21

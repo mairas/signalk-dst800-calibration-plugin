@@ -654,7 +654,10 @@ export function setting<K extends SettingId>(id: K): (typeof SETTING_TABLE)[K] {
  * A qualified setting needs one of its qualifiers; any other setting takes
  * none.
  */
-function checkQualifier(entry: AnySetting, qualifier: number | undefined): ParseResult<undefined> {
+export function checkQualifier(
+  entry: AnySetting,
+  qualifier: number | undefined
+): ParseResult<undefined> {
   if (entry.qualifiers === undefined) {
     return qualifier === undefined ? ok(undefined) : fail(`${entry.id} takes no qualifier`)
   }
