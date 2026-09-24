@@ -141,3 +141,13 @@ A snapshot file is outside input. `parseSnapshot` refuses an unknown schema vers
 Import reads the target, compares with each entry's `sameAsStored`, and writes only what differs, in registry order. Simulate mode, the distance log and product information are `excluded`, and neither read nor written. A setting the target's probe rejected, or whose read the target itself refuses, is `unsupported`. Only an acknowledgement from the device counts as that refusal, and not one naming PGN 65287 or denying access: a read the session refused, because Level 1 is unavailable or its queue is full, says nothing about the device. Such a setting is written like one whose read went unanswered, and its write fails for the same reason and stops the import. Anything but `applied` stops the import, `storedDiffers` and an unconfirmed `acknowledged` included, because the device then holds something other than the snapshot, and every later write reports `notAttempted`. `/api/snapshot/import` works out the diff afresh rather than trusting the one the console showed.
 
 The three snapshot routes read the device, so they stay admin.
+
+## Webapp
+
+`src/ui/` is a Lit webapp served at `/signalk-airmar-dst-config/`. It calls the plugin at `/plugins/signalk-airmar-dst-config/api` on whatever origin served it, so it works on any port and scheme; on a HaLOS device that is Signal K's HTTPS port, never 3000.
+
+It borrows the Signal K admin UI's Bootstrap 5 stylesheet. `index.html` fetches `/admin/` and copies its `<link rel="stylesheet">` tags, because the file name carries a build hash and server 2.33 serves no Vite manifest. A stylesheet in the document head does not reach into a shadow root, so every component extends `LightElement` (`src/ui/light-element.ts`) and renders into the page's own DOM with Bootstrap classes. Dark mode follows `prefers-color-scheme` through Bootstrap's `data-bs-theme`. Until the stylesheet arrives the page renders unstyled.
+
+`dst-app` (`src/ui/main.ts`) loads the device list and the selection with plain requests first, because an EventSource cannot say why it failed, then follows `/api/events` (`src/ui/api.ts`), reopening it after an error. It knows simulate mode only from `setting` events, which the plugin sends when a console opens and every minute after, and forgets it when the selection changes. The access level arrives as time left and `dst-device-status` counts it down from the moment it arrived.
+
+The webapp tests mount `dst-app` under happy-dom with `fetch` mocked and a fake `EventSource`.

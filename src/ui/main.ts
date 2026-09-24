@@ -1,89 +1,218 @@
-import { LitElement, html, css } from 'lit'
+import { html, nothing } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
-import type { HealthResponse } from '../types.js'
+import type {
+  Candidate,
+  DeviceKey,
+  DeviceResponse,
+  DevicesResponse,
+  ProbeResult,
+  ReadResult,
+  ServerEvent,
+  WriteResult
+} from '../types.js'
+import { describeFailure, followEvents, request } from './api.js'
+import './components/device-picker.js'
+import './components/device-status.js'
+import { sameKey } from './format.js'
+import { LightElement } from './light-element.js'
 
-const API_BASE = '/plugins/signalk-airmar-dst-config'
+/** What a read or write of simulate mode says the device now holds, or null when it says nothing. */
+function simulateValueOf(result: ReadResult | WriteResult): boolean | null {
+  const value =
+    result.status === 'answered'
+      ? result.value
+      : result.status === 'applied' || result.status === 'storedDiffers'
+        ? result.stored
+        : 'readBack' in result && result.readBack?.status === 'answered'
+          ? result.readBack.value
+          : null
+  return typeof value === 'boolean' ? value : null
+}
 
 @customElement('dst-app')
-export class DstApp extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-      padding: 1rem;
-      font-family: system-ui, sans-serif;
-    }
-    .error {
-      color: #b00;
-    }
-  `
+export class DstApp extends LightElement {
+  @state() private candidates: Candidate[] = []
+  @state() private device: DeviceResponse | null = null
+  @state() private loadError: string | null = null
+  /** Null until a read or write of the selected sensor's simulate mode has said. */
+  @state() private simulating: boolean | null = null
+  @state() private streamLost = false
+  @state() private selecting = false
+  @state() private probing = false
+  @state() private probeError: string | null = null
 
-  @state() private health: HealthResponse | null = null
-  @state() private error: string | null = null
+  private loading: AbortController | null = null
+  private events: { close: () => void } | null = null
 
-  private inFlight: AbortController | null = null
-
-  override connectedCallback() {
+  override connectedCallback(): void {
     super.connectedCallback()
     void this.load()
   }
 
-  override disconnectedCallback() {
+  override disconnectedCallback(): void {
     super.disconnectedCallback()
-    this.inFlight?.abort()
-    this.inFlight = null
+    this.loading?.abort()
+    this.loading = null
+    this.events?.close()
+    this.events = null
   }
 
   /**
-   * Re-attaching the element calls connectedCallback again, so an earlier
-   * request can still be in flight. Abort it rather than letting whichever
-   * response lands last win.
+   * Load the device list and the selection, then follow the event stream.
+   *
+   * The first load is a plain request because an EventSource cannot say why
+   * it failed: the plugin being stopped and a login being refused both look
+   * the same to it.
    */
-  private async load() {
-    this.inFlight?.abort()
+  private async load(): Promise<void> {
+    this.loading?.abort()
     const controller = new AbortController()
-    this.inFlight = controller
+    this.loading = controller
     try {
-      const response = await fetch(`${API_BASE}/api/health`, {
-        credentials: 'same-origin',
-        signal: controller.signal
+      const [devices, device] = await Promise.all([
+        request<DevicesResponse>('GET', '/devices', undefined, controller.signal),
+        request<DeviceResponse>('GET', '/device', undefined, controller.signal)
+      ])
+      this.candidates = devices.candidates
+      this.showDevice(device)
+      this.loadError = null
+      this.events?.close()
+      this.events = followEvents({
+        onEvent: (event) => {
+          this.receive(event)
+        },
+        onConnected: (connected) => {
+          this.streamLost = !connected
+        }
       })
-      if (!response.ok) {
-        throw new Error(`${String(response.status)} ${response.statusText}`)
-      }
-      this.health = (await response.json()) as HealthResponse
-      this.error = null
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'AbortError') {
         return
       }
-      this.error = cause instanceof Error ? cause.message : String(cause)
+      this.loadError = describeFailure(cause)
     } finally {
-      if (this.inFlight === controller) {
-        this.inFlight = null
+      if (this.loading === controller) {
+        this.loading = null
       }
     }
   }
 
+  private showDevice(device: DeviceResponse): void {
+    if (!sameKey(device.selected, this.device?.selected ?? null)) {
+      this.simulating = null
+      this.probeError = null
+    }
+    this.device = device
+  }
+
+  private receive(event: ServerEvent): void {
+    switch (event.type) {
+      case 'devices':
+        this.candidates = event.data.candidates
+        break
+      case 'device':
+        this.showDevice(event.data)
+        break
+      case 'setting':
+        if (event.data.id === 'simulateMode') {
+          this.simulating = simulateValueOf(event.data.result) ?? this.simulating
+        }
+        break
+      case 'reset':
+        break
+    }
+  }
+
+  private async select(key: DeviceKey): Promise<void> {
+    this.selecting = true
+    try {
+      this.showDevice(await request<DeviceResponse>('PUT', '/device', { device: key }))
+    } catch (cause) {
+      this.loadError = describeFailure(cause)
+    } finally {
+      this.selecting = false
+    }
+  }
+
+  /** Probe the selected sensor; a result that returns after another was selected is dropped. */
+  private async probe(): Promise<void> {
+    const asked = this.device?.selected ?? null
+    this.probing = true
+    this.probeError = null
+    try {
+      const probe = await request<ProbeResult>('POST', '/device/probe')
+      if (this.device !== null && sameKey(this.device.selected, asked)) {
+        this.device = { ...this.device, probe }
+      }
+    } catch (cause) {
+      this.probeError = describeFailure(cause)
+    } finally {
+      this.probing = false
+    }
+  }
+
+  private selectedCandidate(): Candidate | null {
+    const key = this.device?.selected ?? null
+    return this.candidates.find((c) => sameKey(c.key, key)) ?? null
+  }
+
   override render() {
-    if (this.error !== null) {
+    if (this.loadError !== null) {
       return html`
-        <p class="error">Cannot reach the plugin: ${this.error}</p>
-        <button @click=${() => void this.load()}>Retry</button>
+        <main class="container-fluid py-3">
+          <div class="alert alert-danger d-flex align-items-center gap-3">
+            <span>Cannot reach the plugin: ${this.loadError}</span>
+            <button type="button" class="btn btn-sm btn-outline-danger" @click=${() => this.load()}>
+              Retry
+            </button>
+          </div>
+        </main>
       `
     }
-    if (this.health === null) {
-      return html`<p>Loading…</p>`
+    if (this.device === null) {
+      return html`<main class="container-fluid py-3"><p>Loading…</p></main>`
     }
+    const hasDevice = this.device.selected !== null
     return html`
-      <h1>Airmar DST Config</h1>
-      <p>Plugin ${this.health.running ? 'running' : 'stopped'}.</p>
-      <p>
+      <main class="container-fluid py-3">
+        <h1 class="h4 mb-3">Airmar DST configuration</h1>
         ${
-          this.health.selectedDevice === null
-            ? 'No device selected.'
-            : `Device ${String(this.health.selectedDevice.uniqueNumber)}.`
+          this.simulating === true
+            ? html`<div class="alert alert-danger" role="alert">
+                <strong>Simulate mode is on.</strong> The sensor is sending simulated depth, speed
+                and temperature, and every device on the NMEA 2000 bus is receiving them as real,
+                autopilot and anchor alarm included.
+              </div>`
+            : nothing
         }
-      </p>
+        ${
+          this.streamLost
+            ? html`<p class="text-warning">Live updates lost, reconnecting…</p>`
+            : nothing
+        }
+        ${
+          hasDevice
+            ? html`<section class="mb-4" aria-label="Selected sensor">
+                <dst-device-status
+                  .device=${this.device}
+                  .candidate=${this.selectedCandidate()}
+                  .probing=${this.probing}
+                  .probeError=${this.probeError}
+                  @probe=${() => this.probe()}
+                ></dst-device-status>
+              </section>`
+            : html`<p class="lead">Choose the sensor to configure.</p>`
+        }
+        <details ?open=${!hasDevice}>
+          <summary class="mb-2">${hasDevice ? 'Change sensor' : 'Devices on the bus'}</summary>
+          <dst-device-picker
+            .candidates=${this.candidates}
+            .selected=${this.device.selected}
+            .busy=${this.selecting}
+            @select=${(event: CustomEvent<DeviceKey>) => this.select(event.detail)}
+          ></dst-device-picker>
+        </details>
+      </main>
     `
   }
 }
