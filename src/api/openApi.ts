@@ -189,6 +189,29 @@ const resetResult = object(
   ['probe', 'reason']
 )
 
+/** What `PgnObserver` measured for one PGN. */
+const measurement = {
+  pgn: { type: 'integer' },
+  observedIntervalMs: {
+    type: 'integer',
+    description:
+      'The interval measured from the frames the device sent, to 10 ms. 0 while it is not sent periodically, and until two frames were heard since the device was selected or restarted or this interval was set'
+  },
+  observedPriority: nullable({
+    type: 'integer',
+    description:
+      'The priority in the last frame’s header; null until a frame was heard since the device was selected or restarted or this priority was set'
+  })
+}
+
+const pgnMeasured = object({
+  pgns: {
+    type: 'array',
+    description: 'Every PGN heard from the selected device',
+    items: object(measurement)
+  }
+})
+
 const pgnList = object(
   {
     status: { type: 'string', enum: PGN_LIST_STATUSES },
@@ -197,7 +220,7 @@ const pgnList = object(
       description:
         'The transmit list, then the Airmar PGNs the last probe confirmed; only when `answered`',
       items: object({
-        pgn: { type: 'integer' },
+        ...measurement,
         minIntervalMs: {
           type: 'integer',
           description: '50 for a single-frame PGN, 100 for fast-packet'
@@ -484,6 +507,18 @@ export const openApi = {
           '200': { description: 'The device’s answer', ...json(pgnList) },
           '409': errorResponse('No device is selected'),
           '503': notRunningOrUnheard
+        }
+      }
+    },
+    '/api/pgns/measured': {
+      get: {
+        summary: 'The interval and priority measured for each PGN the selected device sends',
+        description:
+          'Reads nothing from the device: the plugin times the frames it hears. Poll this rather than `/api/pgns`, which asks the device for its transmit list each time.',
+        responses: {
+          '200': { description: 'The measurements', ...json(pgnMeasured) },
+          '409': errorResponse('No device is selected'),
+          '503': notRunning
         }
       }
     },

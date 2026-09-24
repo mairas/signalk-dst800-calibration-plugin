@@ -13,25 +13,28 @@ import {
 } from '../restart.js'
 import {
   defaultOf,
+  describeMeasured,
   describePgnWrite,
   intervalRange,
   onRequest,
   parseInterval,
   pgnName,
-  seconds
+  seconds,
+  secondsText
 } from '../pgns.js'
 
 const PRIORITIES = [0, 1, 2, 3, 4, 5, 6, 7]
 
-/** What the console knows about one PGN: nothing is read from the sensor, only what was set. */
+/** What the user has changed for one PGN, and how its last write went; the measurement comes with the list. */
 interface PgnState {
-  interval: string
-  priority: string
+  /** What the user typed or chose; null while the control shows what was measured. */
+  interval: string | null
+  priority: string | null
   busy: 'interval' | 'priority' | null
   outcome: { tone: string; text: string } | null
 }
 
-const EMPTY: PgnState = { interval: '', priority: '', busy: null, outcome: null }
+const EMPTY: PgnState = { interval: null, priority: null, busy: null, outcome: null }
 
 const RESTORES: Record<PgnRestore, { label: string; what: string }> = {
   updateRates: { label: 'Restore default intervals…', what: 'every message’s default interval' },
@@ -41,8 +44,9 @@ const RESTORES: Record<PgnRestore, { label: string; what: string }> = {
 /**
  * The PGNs the sensor transmits, each with an interval and a priority to set.
  *
- * The sensor does not report either, so the controls start empty and each
- * row says what the last write did. A PGN sent only on request has no row.
+ * Each control shows what the plugin measured on the bus until the user
+ * changes it, and each row says what its last write did. A PGN sent only on
+ * request has no row.
  *
  * A restore restarts the sensor, and the panel replaces this element while
  * the sensor is away, so the panel sends it (`restart`) and passes back
@@ -68,6 +72,19 @@ export class PgnTable extends LightElement {
     }
   }
 
+  /**
+   * Show each priority select's value. A binding on the select runs before
+   * its options are rendered, so the value is set once they exist.
+   */
+  protected override updated(): void {
+    for (const select of this.querySelectorAll<HTMLSelectElement>('select[data-value]')) {
+      const value = select.dataset.value ?? ''
+      if (select.value !== value) {
+        select.value = value
+      }
+    }
+  }
+
   private stateOf(pgn: number): PgnState {
     return this.pgns.get(pgn) ?? EMPTY
   }
@@ -88,7 +105,9 @@ export class PgnTable extends LightElement {
       result = { status: 'invalid', reason: describeFailure(cause) }
     }
     const what = 'priority' in body ? { priority: body.priority } : { interval: true as const }
-    this.change(pgn, { busy: null, outcome: describePgnWrite(result, what) })
+    // The written control follows the measurement again, which the panel takes afresh.
+    this.change(pgn, { busy: null, outcome: describePgnWrite(result, what), [kind]: null })
+    this.dispatchEvent(new CustomEvent('remeasure', { bubbles: true }))
   }
 
   /** One of this table's restores is in flight. */
@@ -109,7 +128,10 @@ export class PgnTable extends LightElement {
   private row(info: PgnInfo) {
     const { pgn } = info
     const s = this.stateOf(pgn)
-    const interval = s.interval === '' ? null : parseInterval(s.interval, info.minIntervalMs)
+    const interval = s.interval === null ? null : parseInterval(s.interval, info.minIntervalMs)
+    const measuredInterval = info.observedIntervalMs > 0 ? secondsText(info.observedIntervalMs) : ''
+    const measuredPriority = info.observedPriority === null ? '' : String(info.observedPriority)
+    const priority = s.priority ?? measuredPriority
     const blocked = this.disabled || s.busy !== null
     const id = `pgn-${String(pgn)}`
     return html`
@@ -119,6 +141,9 @@ export class PgnTable extends LightElement {
             <div class="fw-semibold">${pgnName(pgn)}</div>
             <div class="small text-body-secondary">
               PGN ${pgn}${defaultOf(pgn) === null ? '' : ` · ${String(defaultOf(pgn))}`}
+            </div>
+            <div class="small text-body-secondary">
+              ${describeMeasured(info.observedIntervalMs, info.observedPriority)}
             </div>
             ${
               info.telemetry
@@ -136,8 +161,8 @@ export class PgnTable extends LightElement {
                 inputmode="decimal"
                 aria-label=${`Interval of ${pgnName(pgn)}`}
                 class=${`form-control ${interval !== null && !interval.ok ? 'is-invalid' : ''}`}
-                placeholder="Interval"
-                .value=${s.interval}
+                placeholder=${info.observedIntervalMs > 0 ? 'Interval' : 'Not sent'}
+                .value=${s.interval ?? measuredInterval}
                 ?disabled=${blocked}
                 @input=${(event: Event) => {
                   this.change(pgn, { interval: (event.target as HTMLInputElement).value })
@@ -172,24 +197,20 @@ export class PgnTable extends LightElement {
             <div class="input-group input-group-sm">
               <select
                 aria-label=${`Priority of ${pgnName(pgn)}`}
+                data-value=${priority}
                 class="form-select"
                 ?disabled=${blocked}
                 @change=${(event: Event) => {
                   this.change(pgn, { priority: (event.target as HTMLSelectElement).value })
                 }}
               >
-                <option value="" ?selected=${s.priority === ''}>Priority</option>
-                ${PRIORITIES.map(
-                  (p) =>
-                    html`<option value=${String(p)} ?selected=${s.priority === String(p)}>
-                      ${p}
-                    </option>`
-                )}
+                <option value="">Priority</option>
+                ${PRIORITIES.map((p) => html`<option value=${String(p)}>${p}</option>`)}
               </select>
               <button
                 type="button"
                 class="btn btn-outline-primary"
-                ?disabled=${blocked || s.priority === ''}
+                ?disabled=${blocked || s.priority === null || s.priority === ''}
                 @click=${() => this.write(pgn, { priority: Number(s.priority) })}
               >
                 Set priority
@@ -204,7 +225,7 @@ export class PgnTable extends LightElement {
 
   private status(s: PgnState, info: PgnInfo) {
     if (s.busy === 'interval') {
-      const interval = parseInterval(s.interval, info.minIntervalMs)
+      const interval = parseInterval(s.interval ?? '', info.minIntervalMs)
       const wait = interval.ok ? ` (up to ${seconds(observationWindowMs(interval.ms))})` : ''
       return html`<div class="small mt-1 text-body-secondary" role="status">
         <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
@@ -310,9 +331,9 @@ export class PgnTable extends LightElement {
       <div class="list-group-item">
         <div class="fw-semibold">Messages</div>
         <div class="form-text mt-0">
-          How often the sensor sends each message, and at what priority (0 is the highest). The
-          sensor does not report its current intervals or priorities, so each shows only what was
-          set here.
+          How often the sensor sends each message, and at what priority (0 is the highest). Both are
+          measured from what the sensor sends: a message it does not send on its own shows no
+          interval, and a long interval shows once two messages have been heard.
         </div>
         ${
           this.override === false

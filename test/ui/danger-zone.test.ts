@@ -30,7 +30,15 @@ const SETTINGS: SettingInfo[] = [
 
 const PGNS: PgnListResult = {
   status: 'answered',
-  pgns: [{ pgn: 128267, minIntervalMs: 50, telemetry: false }]
+  pgns: [
+    {
+      pgn: 128267,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 1000,
+      observedPriority: 3
+    }
+  ]
 }
 
 interface Sent {

@@ -16,6 +16,7 @@ import { PGN, SINGLE_FRAME_PGNS, TRANSMIT_PGN_LIST } from '../protocol/pids.js'
 import type { DeviceSession } from '../session/deviceSession.js'
 import type { Outcome } from '../session/outcome.js'
 import { FRAMES_TO_OBSERVE, MAX_INTERVAL_MS, observationWindowMs } from './intervalLimits.js'
+import type { Observed, PgnMeasurement } from './pgnObserver.js'
 
 export { MAX_INTERVAL_MS }
 
@@ -42,8 +43,7 @@ export const MAX_PRIORITY = 7
 const PERIOD_TOLERANCE = 0.25
 const MIN_TOLERANCE_MS = 30
 
-export interface PgnInfo {
-  pgn: number
+export interface PgnInfo extends PgnMeasurement {
   minIntervalMs: number
   /** The plugin's telemetry reads this PGN. */
   telemetry: boolean
@@ -77,6 +77,8 @@ export interface PgnContext {
   subscribe: (handler: (pgn: DecodedPgn) => void) => () => void
   /** Monotonic milliseconds. */
   now: () => number
+  /** The device accepted a new interval for `pgn`: what was measured before no longer holds. */
+  intervalChanged: (pgn: number) => void
 }
 
 export const minIntervalMs = (pgn: number): number =>
@@ -88,7 +90,8 @@ const isTransmitList = (value: unknown): boolean =>
 /** The PGNs the device transmits and the probe confirmed, each once. */
 export async function readPgns(
   session: Pick<DeviceSession, 'address' | 'read'>,
-  probe: ProbeResult | undefined
+  probe: ProbeResult | undefined,
+  observed: (pgn: number) => Observed
 ): Promise<PgnListResult> {
   const outcome = await session.read({
     message: requestTransmitList(session.address),
@@ -115,11 +118,16 @@ export async function readPgns(
   const pgns = [...new Set([...outcome.value.flat(), ...probed])]
   return {
     status: 'answered',
-    pgns: pgns.map((pgn) => ({
-      pgn,
-      minIntervalMs: minIntervalMs(pgn),
-      telemetry: TELEMETRY_PGNS.includes(pgn)
-    }))
+    pgns: pgns.map((pgn) => {
+      const { intervalMs, priority } = observed(pgn)
+      return {
+        pgn,
+        minIntervalMs: minIntervalMs(pgn),
+        telemetry: TELEMETRY_PGNS.includes(pgn),
+        observedIntervalMs: intervalMs,
+        observedPriority: priority
+      }
+    })
   }
 }
 
@@ -164,6 +172,7 @@ export async function writeInterval(
   if (outcome.status !== 'answered') {
     return notAnswered(outcome)
   }
+  context.intervalChanged(pgn)
   const frames = await observe(context, pgn, observationWindowMs(input))
   if (frames.length < FRAMES_TO_OBSERVE) {
     return withWarning(pgn, {

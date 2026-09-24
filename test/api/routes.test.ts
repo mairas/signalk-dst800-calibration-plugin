@@ -183,6 +183,11 @@ describe('REST API', () => {
   }
   const named = (stream: ReturnType<typeof createStreamResponse>, event: string) =>
     stream.events().filter((e) => e.event === event)
+  /** What `GET /api/pgns/measured` reports for `pgn`, if it was heard. */
+  const measuredNow = async (pgn: number): Promise<object | undefined> => {
+    const body = (await call('get', '/api/pgns/measured')).body as { pgns: { pgn: number }[] }
+    return body.pgns.find((m) => m.pgn === pgn)
+  }
 
   describe('access', () => {
     it('lets a read-only login read what the plugin holds, and keeps every route that sends a frame at admin', () => {
@@ -197,6 +202,7 @@ describe('REST API', () => {
         'post /api/device/reset': 'admin',
         'post /api/device/restore': 'admin',
         'get /api/pgns': 'admin',
+        'get /api/pgns/measured': 'readonly',
         'put /api/pgns/:pgn': 'admin',
         'get /api/settings': 'readonly',
         'get /api/settings/:id': 'admin',
@@ -611,20 +617,41 @@ describe('REST API', () => {
   })
 
   describe('PGN intervals and priorities', () => {
-    it('lists what the device transmits, in the documented shape', async () => {
+    it('lists what the device transmits with the interval and priority measured on the bus, in the documented shape', async () => {
       start({ selectedDevice: DST_KEY })
       heard()
+      for (let i = 0; i < 4; i += 1) {
+        deliver(depthReply(0))
+        await vi.advanceTimersByTimeAsync(1000)
+      }
       const pending = call('get', '/api/pgns')
       await flush()
-      deliver(pgnListReply('Transmit PGN list', [PGN.waterDepth], from))
+      deliver(pgnListReply('Transmit PGN list', [PGN.waterDepth, PGN.speed], from))
       const response = await pending
 
       expect(response.body).toEqual({
         status: 'answered',
-        pgns: [{ pgn: PGN.waterDepth, minIntervalMs: 50, telemetry: false }]
+        pgns: [
+          {
+            pgn: PGN.waterDepth,
+            minIntervalMs: 50,
+            telemetry: false,
+            observedIntervalMs: 1000,
+            observedPriority: 3
+          },
+          {
+            pgn: PGN.speed,
+            minIntervalMs: 50,
+            telemetry: false,
+            observedIntervalMs: 0,
+            observedPriority: null
+          }
+        ]
       })
-      expect(propertiesOf(documented('/api/pgns', 'get'))).toEqual(
-        expect.arrayContaining(keys(response.body))
+      const schema = documented('/api/pgns', 'get')
+      expect(propertiesOf(schema)).toEqual(expect.arrayContaining(keys(response.body)))
+      expect(propertiesOf(schema.properties?.pgns.items)).toEqual(
+        keys((response.body as { pgns: object[] }).pgns[0])
       )
     })
 
@@ -659,6 +686,131 @@ describe('REST API', () => {
       expect(propertiesOf(documented('/api/pgns/{pgn}', 'put'))).toEqual(
         expect.arrayContaining(keys(response.body))
       )
+    })
+
+    /** The listed PGN's measured interval, once the device answers with its transmit list. */
+    const measuredDepth = async (): Promise<number> => {
+      const list = call('get', '/api/pgns')
+      await flush()
+      deliver(pgnListReply('Transmit PGN list', [PGN.waterDepth], from))
+      const body = (await list).body as { pgns: { observedIntervalMs: number }[] }
+      return body.pgns[0].observedIntervalMs
+    }
+
+    it('measures only the selected device’s frames', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      for (let i = 0; i < 4; i += 1) {
+        deliver({ ...depthReply(0), src: DST.address + 1 })
+        await vi.advanceTimersByTimeAsync(1000)
+      }
+
+      expect(await measuredDepth()).toBe(0)
+    })
+
+    it('measures afresh after another device was selected', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      for (let i = 0; i < 4; i += 1) {
+        deliver(depthReply(0))
+        await vi.advanceTimersByTimeAsync(1000)
+      }
+      await call('put', '/api/device', { body: { device: null } })
+      await call('put', '/api/device', { body: { device: DST_KEY } })
+      heard()
+
+      expect(await measuredDepth()).toBe(0)
+    })
+
+    it('measures the interval afresh after setting it, so the list agrees with the write', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      // Before the write, depth goes out every second.
+      for (let i = 0; i < 5; i += 1) {
+        deliver(depthReply(0.35))
+        await vi.advanceTimersByTimeAsync(1000)
+      }
+      const write = call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.waterDepth) },
+        body: { intervalMs: 500 }
+      })
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      for (let i = 0; i < 3; i += 1) {
+        deliver(depthReply(0.35))
+        await vi.advanceTimersByTimeAsync(500)
+      }
+      expect((await write).body).toEqual({ status: 'applied', observedIntervalMs: 500 })
+
+      const list = call('get', '/api/pgns')
+      await flush()
+      deliver(pgnListReply('Transmit PGN list', [PGN.waterDepth], from))
+      const body = (await list).body as { pgns: { observedIntervalMs: number }[] }
+
+      expect(body.pgns[0].observedIntervalMs).toBe(500)
+    })
+
+    /** Depth every second, long enough to measure. */
+    const depthEverySecond = async (): Promise<void> => {
+      for (let i = 0; i < 5; i += 1) {
+        deliver(depthReply(0.35))
+        await vi.advanceTimersByTimeAsync(1000)
+      }
+    }
+
+    it('keeps the measurement when the device refuses an interval', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      await depthEverySecond()
+      const write = call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.waterDepth) },
+        body: { intervalMs: 500 }
+      })
+      await flush()
+      deliver(
+        acknowledge(
+          { acknowledgedPgn: PGN.waterDepth, intervalErrorCode: 'Transmit Interval too low' },
+          from
+        )
+      )
+      expect((await write).body).toMatchObject({ status: 'rejected' })
+
+      expect(await measuredDepth()).toBe(1000)
+    })
+
+    it('reports every measurement without asking the device, in the documented shape', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      await depthEverySecond()
+      const response = await call('get', '/api/pgns/measured')
+
+      expect(sent).toHaveLength(0)
+      expect(response.body).toEqual({
+        pgns: [{ pgn: PGN.waterDepth, observedIntervalMs: 1000, observedPriority: 3 }]
+      })
+      const schema = documented('/api/pgns/measured', 'get')
+      expect(propertiesOf(schema)).toEqual(keys(response.body))
+      expect(propertiesOf(schema.properties?.pgns.items)).toEqual(
+        keys((response.body as { pgns: object[] }).pgns[0])
+      )
+    })
+
+    it('drops the old priority once the device acknowledges a new one', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      await depthEverySecond()
+      const write = call('put', '/api/pgns/:pgn', {
+        params: { pgn: String(PGN.waterDepth) },
+        body: { priority: 2 }
+      })
+      await flush()
+      deliver(acknowledge({ acknowledgedPgn: PGN.waterDepth }, from))
+      expect((await write).body).toEqual({ status: 'applied' })
+
+      expect(await measuredNow(PGN.waterDepth)).toEqual({
+        pgn: PGN.waterDepth,
+        observedIntervalMs: 1000,
+        observedPriority: null
+      })
     })
 
     it('refuses a PGN wider than the 126208 field, which would wrap onto another', async () => {
@@ -810,6 +962,10 @@ describe('REST API', () => {
       start({ selectedDevice: DST_KEY })
       heard()
       respondLikeTheDevice()
+      for (let i = 0; i < 5; i += 1) {
+        deliver(depthReply(0.35))
+        await vi.advanceTimersByTimeAsync(1000)
+      }
       const pending = call('post', '/api/device/restore', { body: { option: 'updateRates' } })
       await flush()
 
@@ -820,6 +976,8 @@ describe('REST API', () => {
       await vi.advanceTimersByTimeAsync(60_000)
 
       expect((await pending).body).toMatchObject({ status: 'claimed' })
+      // The restore may have changed every interval, so none measured before it counts.
+      expect(await measuredNow(PGN.waterDepth)).toBeUndefined()
     })
 
     it.each([

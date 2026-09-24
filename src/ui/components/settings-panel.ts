@@ -3,7 +3,9 @@ import { customElement, property, state } from 'lit/decorators.js'
 import type {
   DeviceKey,
   DeviceResponse,
+  PgnInfo,
   PgnListResult,
+  PgnMeasuredResponse,
   ResetResult,
   ReadResult,
   SettingEvent,
@@ -44,7 +46,7 @@ import './pgn-table.js'
 import './snapshot-panel.js'
 import './danger-zone.js'
 
-/** How often the read age moves on screen. */
+/** How often the read age moves on screen and the PGN measurements are refreshed. */
 const TICK_MS = 5000
 
 /** Read with the rest, shown in the header rather than as a row. */
@@ -117,6 +119,7 @@ export class SettingsPanel extends LightElement {
     super.connectedCallback()
     this.ticker = setInterval(() => {
       this.now = Date.now()
+      void this.measure()
     }, TICK_MS)
   }
 
@@ -249,6 +252,45 @@ export class SettingsPanel extends LightElement {
     }
     this.pgns = list
     this.pgnsError = failure
+  }
+
+  /**
+   * Refresh each listed PGN's measured interval and priority. The plugin
+   * times the frames it hears, so this asks the sensor nothing.
+   */
+  private async measure(): Promise<void> {
+    const key = this.selected
+    if (this.listed() === null) {
+      return
+    }
+    let measured: PgnMeasuredResponse
+    try {
+      measured = await request<PgnMeasuredResponse>('GET', '/pgns/measured')
+    } catch {
+      // The rows keep the last measurement until the next tick.
+      return
+    }
+    const listed = this.listed()
+    if (!sameKey(this.selected, key) || listed === null) {
+      return
+    }
+    const byPgn = new Map(measured.pgns.map((m) => [m.pgn, m]))
+    this.pgns = {
+      status: 'answered',
+      pgns: listed.map((info) => {
+        const m = byPgn.get(info.pgn)
+        return {
+          ...info,
+          observedIntervalMs: m?.observedIntervalMs ?? 0,
+          observedPriority: m?.observedPriority ?? null
+        }
+      })
+    }
+  }
+
+  /** The PGNs the sensor listed, while its list is on screen. */
+  private listed(): PgnInfo[] | null {
+    return this.pgns?.status === 'answered' ? this.pgns.pgns : null
   }
 
   /** One restart at a time: a second would reach a sensor that is already rebooting. */
@@ -507,6 +549,7 @@ export class SettingsPanel extends LightElement {
                   .restarting=${this.restarting}
                   .restarted=${this.restarted}
                   @restart=${(event: RestartRequest) => this.restart(event)}
+                  @remeasure=${() => this.measure()}
                 ></dst-pgns>`
               : nothing
           }

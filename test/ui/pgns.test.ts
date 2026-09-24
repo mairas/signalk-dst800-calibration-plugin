@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { PgnListResult, PgnWriteResult, ReadResult, SettingInfo } from '../../src/types.js'
+import type {
+  PgnListResult,
+  PgnMeasuredResponse,
+  PgnMeasurement,
+  PgnWriteResult,
+  ReadResult,
+  SettingInfo
+} from '../../src/types.js'
 import '../../src/ui/main.js'
 import {
   FakeEventSource,
@@ -29,11 +36,41 @@ const OVERRIDE: SettingInfo = {
 const LIST: PgnListResult = {
   status: 'answered',
   pgns: [
-    { pgn: 128267, minIntervalMs: 50, telemetry: false },
-    { pgn: 130316, minIntervalMs: 50, telemetry: false },
-    { pgn: 60928, minIntervalMs: 50, telemetry: false },
-    { pgn: 126996, minIntervalMs: 100, telemetry: false },
-    { pgn: 65409, minIntervalMs: 50, telemetry: true }
+    {
+      pgn: 128267,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 1000,
+      observedPriority: 3
+    },
+    {
+      pgn: 130316,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 2000,
+      observedPriority: 5
+    },
+    {
+      pgn: 60928,
+      minIntervalMs: 50,
+      telemetry: false,
+      observedIntervalMs: 0,
+      observedPriority: null
+    },
+    {
+      pgn: 126996,
+      minIntervalMs: 100,
+      telemetry: false,
+      observedIntervalMs: 0,
+      observedPriority: 6
+    },
+    {
+      pgn: 65409,
+      minIntervalMs: 50,
+      telemetry: true,
+      observedIntervalMs: 0,
+      observedPriority: null
+    }
   ]
 }
 
@@ -145,14 +182,144 @@ describe('PGN intervals and priorities', () => {
     expect(prioritySelect(pgnRow(el, 128267))).not.toBeNull()
   })
 
-  it('says it cannot show the current intervals, because the sensor does not report them', async () => {
+  it('fills each row with the interval and priority measured on the bus, and says so', async () => {
     sensor()
     const el = await open()
 
-    expect(text(el.querySelector('#network'))).toContain(
-      'The sensor does not report its current intervals or priorities'
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('1.00')
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('3')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 1.00 s, priority 3')
+    expect(text(el.querySelector('#network'))).toContain('measured from what the sensor sends')
+  })
+
+  it('says a message the sensor does not send on its own is not sent periodically', async () => {
+    sensor()
+    const el = await open()
+
+    expect(intervalInput(pgnRow(el, 65409))?.value).toBe('')
+    expect(text(pgnRow(el, 65409))).toContain('Measured: not sent periodically')
+  })
+
+  it('offers Set only once a value is edited', async () => {
+    sensor()
+    const el = await open()
+    const row = pgnRow(el, 128267)
+
+    expect(button(row, 'Set').disabled).toBe(true)
+    expect(button(row, 'Set priority').disabled).toBe(true)
+
+    const input = intervalInput(row)
+    if (input === null) {
+      throw new Error('No interval input')
+    }
+    input.value = '0.5'
+    input.dispatchEvent(new Event('input'))
+    await settle()
+
+    expect(button(row, 'Set').disabled).toBe(false)
+  })
+
+  /** A sensor whose depth measurement is `depth()` at each request, answering every write. */
+  const measuring = (depth: () => Partial<PgnMeasurement>, sent: Sent[] = []) => {
+    serve(
+      selected(),
+      (path, init) => {
+        const method = init?.method ?? 'GET'
+        sent.push({ method, path, body: init?.body })
+        if (method === 'GET' && path === '/pgns') {
+          return json(LIST)
+        }
+        if (method === 'GET' && path === '/pgns/measured') {
+          return json({
+            pgns: [{ pgn: 128267, observedIntervalMs: 1000, observedPriority: 3, ...depth() }]
+          } satisfies PgnMeasuredResponse)
+        }
+        if (method === 'PUT') {
+          return json({ status: 'applied', observedIntervalMs: 500 } satisfies PgnWriteResult)
+        }
+        return json({ status: 'answered', value: true, readAt: READ_AT } satisfies ReadResult)
+      },
+      [OVERRIDE],
+      {},
+      null
     )
-    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('')
+  }
+
+  it('measures again after a write without asking the sensor for its list, and the row follows', async () => {
+    const sent: Sent[] = []
+    let written = false
+    measuring(() => (written ? { observedIntervalMs: 500 } : {}), sent)
+    const el = await open()
+
+    // No tick passes before the write, so only the write asks for the measurement.
+    written = true
+    await setInterval_(pgnRow(el, 128267), '0.5')
+    await settle()
+
+    expect(sent.filter((s) => s.path === '/pgns')).toHaveLength(1)
+    expect(sent.filter((s) => s.path === '/pgns/measured')).toHaveLength(1)
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('0.50')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 0.50 s')
+  })
+
+  it('follows the measurement as it changes, without a write', async () => {
+    let depth: Partial<PgnMeasurement> = {}
+    measuring(() => depth)
+    const el = await open()
+    // Selected moments ago: depth has not been heard twice yet.
+    expect(text(pgnRow(el, 130316))).toContain('Measured: every 2.00 s')
+
+    depth = { observedIntervalMs: 2500 }
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('2.50')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 2.50 s')
+    // Measured nothing for this one since the list came: not sent after all.
+    expect(text(pgnRow(el, 130316))).toContain('Measured: not sent periodically')
+  })
+
+  it('shows no priority after a priority write until a frame carries the new one', async () => {
+    let priority: number | null = 3
+    measuring(() => ({ observedPriority: priority }))
+    const el = await open()
+    const select = prioritySelect(pgnRow(el, 128267))
+    if (select === null) {
+      throw new Error('No priority select')
+    }
+
+    select.value = '2'
+    select.dispatchEvent(new Event('change'))
+    await settle()
+    priority = null
+    button(pgnRow(el, 128267), 'Set priority').click()
+    await settle()
+
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('')
+    expect(text(pgnRow(el, 128267))).toContain('✓ Priority 2 stored.')
+
+    priority = 2
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('2')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 1.00 s, priority 2')
+  })
+
+  it('keeps a chosen priority when the same row’s interval is set', async () => {
+    measuring(() => ({}))
+    const el = await open()
+    const select = prioritySelect(pgnRow(el, 128267))
+    if (select === null) {
+      throw new Error('No priority select')
+    }
+    select.value = '5'
+    select.dispatchEvent(new Event('change'))
+    await settle()
+
+    await setInterval_(pgnRow(el, 128267), '0.5')
+    await settle()
+
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('5')
+    expect(button(pgnRow(el, 128267), 'Set priority').disabled).toBe(false)
   })
 
   it('lists messages sent only on request without controls', async () => {
@@ -222,7 +389,18 @@ describe('PGN intervals and priorities', () => {
 
   it('quotes the stricter minimum for a fast-packet PGN', async () => {
     sensor({
-      list: { status: 'answered', pgns: [{ pgn: 128275, minIntervalMs: 100, telemetry: false }] }
+      list: {
+        status: 'answered',
+        pgns: [
+          {
+            pgn: 128275,
+            minIntervalMs: 100,
+            telemetry: false,
+            observedIntervalMs: 1000,
+            observedPriority: 6
+          }
+        ]
+      }
     })
     const el = await open()
     const input = intervalInput(pgnRow(el, 128275))
@@ -337,7 +515,7 @@ describe('PGN intervals and priorities', () => {
     expect(text(section)).toContain('The sensor claimed its address again')
     // What was set before the restart no longer describes the sensor.
     expect(text(pgnRow(el, 128267))).not.toContain('Stored')
-    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('')
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('1.00')
   })
 
   it('keeps a restore’s outcome through the restart it causes', async () => {

@@ -1,6 +1,7 @@
 import type { Candidate, Location } from './devices/registry.js'
 import type { ProbeResult } from './devices/probe.js'
 import type { AccessView } from './session/accessLevel.js'
+import type { PgnMeasurement } from './settings/pgnObserver.js'
 import type { ReadResult, WriteResult } from './settings/operations.js'
 import type { Qualifier } from './settings/registry.js'
 
@@ -9,6 +10,7 @@ export type { ProbeResult } from './devices/probe.js'
 export type { AccessView } from './session/accessLevel.js'
 export type { ReadResult, WriteResult } from './settings/operations.js'
 export type { PgnInfo, PgnListResult, PgnWriteResult } from './settings/pgnIntervals.js'
+export type { PgnMeasurement } from './settings/pgnObserver.js'
 export type {
   ImportItem,
   ImportPlan,
@@ -101,6 +103,11 @@ export interface SettingInfo {
    * not ask about, such as the depth offset, which every sensor has.
    */
   available: 'yes' | 'no' | 'unknown'
+}
+
+/** Body of `GET /api/pgns/measured`: every PGN heard from the selected device. */
+export interface PgnMeasuredResponse {
+  pgns: PgnMeasurement[]
 }
 
 /** Body of `GET /api/settings`. */

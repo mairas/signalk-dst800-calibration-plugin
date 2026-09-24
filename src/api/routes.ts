@@ -43,6 +43,7 @@ import type { DeviceSession } from '../session/deviceSession.js'
 import {
   deviceKeyOf,
   type DeviceKey,
+  type PgnMeasuredResponse,
   type ServerEvent,
   type SettingInfo,
   type SettingsResponse
@@ -277,7 +278,24 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     }
     const { runtime, session } = selected
     const key = runtime.selected
-    res.json(await readPgns(session, key === null ? undefined : runtime.probes.get(key)))
+    res.json(
+      await readPgns(session, key === null ? undefined : runtime.probes.get(key), (pgn) =>
+        runtime.observed.observed(pgn)
+      )
+    )
+  })
+
+  readonly.get('/api/pgns/measured', (_req: Request, res: Response) => {
+    const runtime = running(res)
+    if (runtime === null) {
+      return
+    }
+    if (runtime.selected === null) {
+      error(res, 409, NO_DEVICE)
+      return
+    }
+    const body: PgnMeasuredResponse = { pgns: runtime.observed.measurements() }
+    res.json(body)
   })
 
   router.put('/api/pgns/:pgn', async (req: Request, res: Response) => {
@@ -302,6 +320,10 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     if (result.status === 'invalid') {
       error(res, 400, result.reason)
       return
+    }
+    if (!interval && result.status === 'applied') {
+      // The last frame heard carried the old priority; the next one carries the new.
+      runtime.observed.forgetPriority(pgn)
     }
     res.json(result)
   })
