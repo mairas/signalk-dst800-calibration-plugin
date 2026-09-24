@@ -10,6 +10,7 @@ import {
   writePriority,
   type PgnContext
 } from '../../src/settings/pgnIntervals.js'
+import { NOT_SEEN } from '../../src/settings/pgnObserver.js'
 
 const DEVICE = 22
 const GATEWAY = 100
@@ -29,12 +30,19 @@ describe('PGN intervals and priorities', () => {
   let bus: FakeBus
   let session: DeviceSession
   let context: PgnContext
+  let changed: number[]
 
   beforeEach(() => {
     vi.useFakeTimers()
     bus = new FakeBus()
     session = new DeviceSession({ address: DEVICE, bus, now: () => Date.now() })
-    context = { session, subscribe: (handler) => bus.subscribe(handler), now: () => Date.now() }
+    changed = []
+    context = {
+      session,
+      subscribe: (handler) => bus.subscribe(handler),
+      now: () => Date.now(),
+      intervalChanged: (pgn) => changed.push(pgn)
+    }
   })
 
   afterEach(() => {
@@ -54,7 +62,7 @@ describe('PGN intervals and priorities', () => {
 
   describe('the editable list', () => {
     it('joins the transmit list with the proprietary PGNs the probe found, once each', async () => {
-      const pending = readPgns(session, probed(PGN.speedPulseCount, PGN.waterDepth))
+      const pending = readPgns(session, probed(PGN.speedPulseCount, PGN.waterDepth), () => NOT_SEEN)
       await flush()
       bus.deliver(pgnListReply('Transmit PGN list', [PGN.waterDepth, PGN.speed], from))
       const result = await pending
@@ -71,7 +79,7 @@ describe('PGN intervals and priorities', () => {
     })
 
     it('ignores the receive list', async () => {
-      const pending = readPgns(session, undefined)
+      const pending = readPgns(session, undefined, () => NOT_SEEN)
       await flush()
       bus.deliver(pgnListReply('Receive PGN list', [PGN.groupFunction], from))
       bus.deliver(pgnListReply('Transmit PGN list', [PGN.distanceLog], from))
@@ -90,6 +98,7 @@ describe('PGN intervals and priorities', () => {
       await transmit(PGN.waterDepth, 500, 3)
 
       expect(await pending).toEqual({ status: 'applied', observedIntervalMs: 500 })
+      expect(changed).toEqual([PGN.waterDepth])
     })
 
     it('times the last gap, since the first frame may still follow the old period', async () => {
@@ -125,6 +134,8 @@ describe('PGN intervals and priorities', () => {
       )
 
       expect(await pending).toMatchObject({ status: 'rejected' })
+      // The old interval still holds, and so does its measurement.
+      expect(changed).toEqual([])
     })
 
     it('reports an accepted interval it could not observe as unconfirmed', async () => {

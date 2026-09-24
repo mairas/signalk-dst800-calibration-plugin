@@ -215,7 +215,14 @@ export class ConsoleRuntime {
 
   /** What an interval write needs: the session, and the bus to time the frames on. */
   pgnContext(session: DeviceSession): PgnContext {
-    return { session, subscribe: (handler) => this.bus.subscribe(handler), now: this.now }
+    return {
+      session,
+      subscribe: (handler) => this.bus.subscribe(handler),
+      now: this.now,
+      intervalChanged: (pgn) => {
+        this.observed.forget(pgn)
+      }
+    }
   }
 
   /** Body of `GET /api/devices`. */

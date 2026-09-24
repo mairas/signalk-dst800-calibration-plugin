@@ -43,6 +43,7 @@ import type { DeviceSession } from '../session/deviceSession.js'
 import {
   deviceKeyOf,
   type DeviceKey,
+  type PgnMeasuredResponse,
   type ServerEvent,
   type SettingInfo,
   type SettingsResponse
@@ -284,6 +285,19 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     )
   })
 
+  readonly.get('/api/pgns/measured', (_req: Request, res: Response) => {
+    const runtime = running(res)
+    if (runtime === null) {
+      return
+    }
+    if (runtime.selected === null) {
+      error(res, 409, NO_DEVICE)
+      return
+    }
+    const body: PgnMeasuredResponse = { pgns: runtime.observed.measurements() }
+    res.json(body)
+  })
+
   router.put('/api/pgns/:pgn', async (req: Request, res: Response) => {
     const raw = String(req.params.pgn)
     const body: unknown = req.body
@@ -300,16 +314,16 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
     }
     const { runtime, session } = selected
     const pgn = Number(raw)
-    if (interval) {
-      // The frames timed after the write measure the new interval, not a mix of old and new.
-      runtime.observed.forget(pgn)
-    }
     const result = interval
       ? await writeInterval(runtime.pgnContext(session), pgn, fields.intervalMs)
       : await writePriority(session, pgn, fields.priority)
     if (result.status === 'invalid') {
       error(res, 400, result.reason)
       return
+    }
+    if (!interval && result.status === 'applied') {
+      // The last frame heard carried the old priority; the next one carries the new.
+      runtime.observed.forgetPriority(pgn)
     }
     res.json(result)
   })

@@ -30,7 +30,16 @@ export interface Observed {
   priority: number | null
 }
 
-const NOT_SEEN: Observed = { intervalMs: 0, priority: null }
+export const NOT_SEEN: Observed = { intervalMs: 0, priority: null }
+
+/** One PGN's measurement, as the API reports it. */
+export interface PgnMeasurement {
+  pgn: number
+  /** The interval measured on the bus, to 10 ms; 0 while it is not sent periodically. */
+  observedIntervalMs: number
+  /** The priority the last frame carried; null when none was heard since it was last set. */
+  observedPriority: number | null
+}
 
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b)
@@ -72,6 +81,22 @@ export class PgnObserver {
     return {
       intervalMs: stopped ? 0 : Math.round(period / ROUND_MS) * ROUND_MS,
       priority: entry.priority
+    }
+  }
+
+  /** Every PGN heard since the last clear. */
+  measurements(): PgnMeasurement[] {
+    return [...this.heard.keys()].map((pgn) => {
+      const { intervalMs, priority } = this.observed(pgn)
+      return { pgn, observedIntervalMs: intervalMs, observedPriority: priority }
+    })
+  }
+
+  /** Wait for the next frame's priority, as after the priority was set. */
+  forgetPriority(pgn: number): void {
+    const entry = this.heard.get(pgn)
+    if (entry !== undefined) {
+      this.heard.set(pgn, { ...entry, priority: null })
     }
   }
 
