@@ -10,7 +10,7 @@ import { CURVE_SPEED_RESOLUTION } from '../protocol/pids.js'
 import type { ReadResult, WriteResult } from '../types.js'
 import { curveOf } from './curve.js'
 import { isRecord } from './format.js'
-import { unitFor, type DisplayUnit, type UnitSpec, type Units } from './units.js'
+import { unitFor, unitNamed, type DisplayUnit, type UnitSpec, type Units } from './units.js'
 
 export type Editor =
   | { kind: 'number' }
@@ -155,6 +155,12 @@ export function labelOf(id: string, qualifier: number | null): string {
 export function unitOf(units: Units, id: string): DisplayUnit | null {
   const spec = VIEWS[id]?.unit
   return spec === undefined ? null : unitFor(units, spec)
+}
+
+/** A unit of a setting's kind that a file names, or null when the server knows none. */
+export function unitNamedFor(units: Units, id: string, name: string): DisplayUnit | null {
+  const spec = VIEWS[id]?.unit
+  return spec === undefined ? null : unitNamed(units, spec, name)
 }
 
 /** A setting's value as its row says it, or JSON for a setting the console shows no row for. */

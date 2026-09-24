@@ -57,8 +57,12 @@ export type UnitSpec =
 
 export interface DisplayUnit {
   symbol: string
+  /** Digits after the point that `format` writes. */
+  decimals: number
   /** An SI value in this unit, at the decimals the sensor can store. */
   format(si: number): string
+  /** An SI value in this unit, unrounded. */
+  toShown(si: number): number
   /** What the user typed, in SI units, or null when it is not a number. */
   parse(text: string): number | null
 }
@@ -71,7 +75,9 @@ function unit(
 ): DisplayUnit {
   return {
     symbol,
+    decimals,
     format: (si) => toDisplay(si).toFixed(decimals),
+    toShown: toDisplay,
     parse: (text) => {
       const shown = text.trim() === '' ? NaN : Number(text)
       return Number.isFinite(shown) ? toSi(shown) : null
@@ -148,6 +154,37 @@ export function unitFor(units: Units, spec: UnitSpec): DisplayUnit {
       ? decimalsOf(category?.displayFormat)
       : decimalsFor(toDisplay(spec.resolution) - toDisplay(0))
   return unit(conversion.symbol, decimals, toDisplay, toSi)
+}
+
+/**
+ * A unit of `spec`'s category named `name`, by its key or symbol in the
+ * server's definitions, or null when the server knows no such unit. For a
+ * file that names its own unit, whatever the user's preset shows.
+ */
+export function unitNamed(units: Units, spec: UnitSpec, name: string): DisplayUnit | null {
+  if ('fixed' in spec) {
+    return null
+  }
+  const base = units.preset.categories[spec.category]?.baseUnit ?? BASE_UNITS[spec.category]
+  if (base === undefined) {
+    return null
+  }
+  const conversions = units.definitions[base]?.conversions ?? {}
+  // A spreadsheet user may capitalise the header; no two speed units differ only in case.
+  const wanted = name.toLowerCase()
+  const key =
+    wanted === base.toLowerCase()
+      ? base
+      : Object.keys(conversions).find(
+          (k) => k.toLowerCase() === wanted || conversions[k].symbol.toLowerCase() === wanted
+        )
+  if (key === undefined) {
+    return null
+  }
+  const preset: Preset = {
+    categories: { [spec.category]: { baseUnit: base, targetUnit: key } }
+  }
+  return unitFor({ preset, definitions: units.definitions }, spec)
 }
 
 async function getJson(url: string): Promise<unknown> {

@@ -10,7 +10,8 @@ import type {
 } from '../../types.js'
 import { ApiError, describeFailure, request } from '../api.js'
 import { curveChanges, curveOf } from '../curve.js'
-import { clause, sameKey } from '../format.js'
+import { download } from '../download.js'
+import { clause, dayOf, sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
   VIEWS,
@@ -24,9 +25,6 @@ import {
 import { SI, type Units } from '../units.js'
 
 const plural = (n: number, word: string) => `${String(n)} ${word}${n === 1 ? '' : 's'}`
-
-/** The YYYY-MM-DD an ISO timestamp falls on. */
-const dayOf = (iso: string): string => iso.split('T')[0]
 
 /** The plugin refused the file itself, not the request. */
 const BAD_REQUEST = 400
@@ -87,14 +85,7 @@ export class SnapshotPanel extends LightElement {
         return
       }
       const name = `dst-${String(snapshot.device.uniqueNumber)}-${dayOf(snapshot.takenAt)}.json`
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
-      )
-      const link = document.createElement('a')
-      link.href = url
-      link.download = name
-      link.click()
-      URL.revokeObjectURL(url)
+      download(name, JSON.stringify(snapshot, null, 2), 'application/json')
       const gaps = snapshot.unread.map((gap) => `${labelOf(gap.id, gap.qualifier)} (${gap.reason})`)
       this.saved = {
         tone: gaps.length === 0 ? 'success' : 'warning',

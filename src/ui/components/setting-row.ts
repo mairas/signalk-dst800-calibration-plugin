@@ -1,7 +1,8 @@
 import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
+import type { DeviceKey } from '../../types.js'
 import { checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
-import { isRecord } from '../format.js'
+import { isRecord, sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
   describeOutcome,
@@ -12,6 +13,7 @@ import {
   type Outcome
 } from '../settings.js'
 import type { DisplayUnit } from '../units.js'
+import './curve-csv.js'
 import './curve-editor.js'
 import type { RowsChange } from './curve-editor.js'
 
@@ -57,6 +59,10 @@ export class SettingRow extends LightElement {
   @property({ attribute: false }) row: RowState = EMPTY_ROW
   /** The sensor is not on the bus. */
   @property({ type: Boolean }) disabled = false
+  /** The sensor. An edit belongs to it, and its files are named for it. */
+  @property({ attribute: false }) device: DeviceKey | null = null
+  /** The unit a curve file names, or null when the server knows no such unit. */
+  @property({ attribute: false }) resolveUnit: (name: string) => DisplayUnit | null = () => null
 
   /** What the user typed, per field; null while the control follows the sensor. */
   @state() private draft: string[] | null = null
@@ -70,6 +76,13 @@ export class SettingRow extends LightElement {
   }
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    const device = changed.get('device') as DeviceKey | null | undefined
+    if (device !== undefined && !sameKey(device, this.device)) {
+      // An edit made for one sensor must not be saved to another.
+      this.draft = null
+      this.confirming = false
+      this.understood = false
+    }
     const previous = changed.get('row') as RowState | undefined
     if (previous === undefined || previous.outcome === this.row.outcome) {
       return
@@ -168,7 +181,7 @@ export class SettingRow extends LightElement {
       case 'description':
         return { description1: fields[0], description2: fields[1] }
       case 'curve':
-        return this.unit === null ? null : checkCurve(pairs(fields), this.unit).points
+        return this.curveCheck()?.points ?? null
       default:
         return null
     }
@@ -287,9 +300,15 @@ export class SettingRow extends LightElement {
     `
   }
 
+  /** The curve the table holds and its problems, checked once per use. */
+  private curveCheck(): ReturnType<typeof checkCurve> | null {
+    return this.unit === null ? null : checkCurve(pairs(this.fields), this.unit)
+  }
+
   private curveControl() {
     const rows = pairs(this.fields)
-    const problems = this.unit === null ? [] : checkCurve(rows, this.unit).problems
+    const check = this.curveCheck()
+    const problems = check?.problems ?? []
     const outcome = this.row.outcome
     const refused =
       this.dirty && outcome?.kind === 'refused'
@@ -321,6 +340,18 @@ export class SettingRow extends LightElement {
             </ul>`
       }
       ${this.saveButtons()}
+      <dst-curve-csv
+        .points=${check?.points ?? null}
+        .dirty=${this.dirty}
+        .stored=${this.row.stored === null ? null : pairs(stored)}
+        .speed=${this.unit}
+        .resolveUnit=${this.resolveUnit}
+        .device=${this.device}
+        ?disabled=${this.blocked}
+        @rows-change=${(event: RowsChange) => {
+          this.draft = event.detail.rows.flat()
+        }}
+      ></dst-curve-csv>
     `
   }
 
