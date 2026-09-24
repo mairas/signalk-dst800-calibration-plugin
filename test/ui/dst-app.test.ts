@@ -1,131 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type {
-  Candidate,
-  DeviceResponse,
-  DevicesResponse,
-  ProbeResult,
-  ServerEvent
-} from '../../src/types.js'
 import { API_BASE, RECONNECT_MS } from '../../src/ui/api.js'
 import '../../src/ui/main.js'
-
-/** Stands in for the browser's EventSource; each instance is one connection. */
-class FakeEventSource {
-  static instances: FakeEventSource[] = []
-  onopen: (() => void) | null = null
-  onerror: (() => void) | null = null
-  closed = false
-  private readonly listeners = new Map<string, ((message: MessageEvent<string>) => void)[]>()
-
-  constructor(readonly url: string) {
-    FakeEventSource.instances.push(this)
-  }
-
-  addEventListener(type: string, listener: (message: MessageEvent<string>) => void): void {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
-  }
-
-  close(): void {
-    this.closed = true
-  }
-
-  push(event: ServerEvent): void {
-    for (const listener of this.listeners.get(event.type) ?? []) {
-      listener(new MessageEvent(event.type, { data: JSON.stringify(event.data) }))
-    }
-  }
-
-  static get latest(): FakeEventSource {
-    const latest = FakeEventSource.instances.at(-1)
-    if (latest === undefined) {
-      throw new Error('No event stream was opened')
-    }
-    return latest
-  }
-}
-
-const DST = { manufacturerCode: 135, uniqueNumber: 123456 }
-const OTHER = { manufacturerCode: 137, uniqueNumber: 42 }
-
-const candidates: Candidate[] = [
-  {
-    key: DST,
-    location: { state: 'present', address: 22 },
-    manufacturerName: 'Airmar',
-    modelId: 'DST800',
-    serial: '0123456'
-  },
-  {
-    key: OTHER,
-    location: { state: 'present', address: 35 },
-    manufacturerName: 'Maretron',
-    modelId: 'DSM150',
-    serial: null
-  }
-]
-
-const probe: ProbeResult = {
-  level1: { state: 'granted' },
-  capabilities: [
-    { capability: { kind: 'pid', pid: 41 }, result: { state: 'supported' } },
-    { capability: { kind: 'pid', pid: 40 }, result: { state: 'noAnswer', reason: 'No answer' } }
-  ],
-  configurable: 'yes',
-  interrupted: false
-}
-
-const selected = (overrides: Partial<DeviceResponse> = {}): DeviceResponse => ({
-  selected: DST,
-  location: { state: 'present', address: 22 },
-  access: { state: 'locked' },
-  probe: null,
-  ...overrides
-})
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
-
-/** Answer GET /devices and /device, and any other request by `other`. */
-function serve(
-  device: DeviceResponse,
-  other?: (path: string, init?: RequestInit) => Response | Promise<Response>
-) {
-  vi.mocked(fetch).mockImplementation((input, init) => {
-    const path = (input as string).slice(API_BASE.length)
-    const method = init?.method ?? 'GET'
-    if (method === 'GET' && path === '/devices') {
-      return Promise.resolve(json({ candidates } satisfies DevicesResponse))
-    }
-    if (method === 'GET' && path === '/device') {
-      return Promise.resolve(json(device))
-    }
-    if (other !== undefined) {
-      return Promise.resolve(other(path, init))
-    }
-    return Promise.reject(new Error(`Unexpected ${method} ${path}`))
-  })
-}
-
-const settle = async () => {
-  await vi.advanceTimersByTimeAsync(0)
-}
-
-const mount = async () => {
-  const el = document.createElement('dst-app')
-  document.body.appendChild(el)
-  await settle()
-  return el
-}
-
-const text = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ')
-
-const button = (el: Element, label: string): HTMLButtonElement => {
-  const found = [...el.querySelectorAll('button')].find((b) => b.textContent.trim() === label)
-  if (found === undefined) {
-    throw new Error(`No button labelled ${label}`)
-  }
-  return found
-}
+import {
+  FakeEventSource,
+  OTHER,
+  button,
+  json,
+  mount,
+  probe,
+  selected,
+  serve,
+  settle,
+  text
+} from './helpers.js'
+import type { ServerEvent } from '../../src/types.js'
 
 describe('dst-app', () => {
   beforeEach(() => {
@@ -145,8 +33,10 @@ describe('dst-app', () => {
   describe('choosing a device', () => {
     it('lists every candidate with its model and serial, and marks the selected one', async () => {
       serve(selected())
-
       const el = await mount()
+
+      button(el, 'Change sensor').click()
+      await settle()
       const rows = [...el.querySelectorAll('dst-device-picker tbody tr')]
 
       expect(rows.map(text)).toEqual([
@@ -170,7 +60,7 @@ describe('dst-app', () => {
       await settle()
 
       expect(bodies).toEqual([['PUT', '/device', { device: OTHER }]])
-      expect(text(el.querySelector('dst-device-status'))).toContain('DSM150')
+      expect(text(el.querySelector('dst-sensor-header h1'))).toContain('DSM150')
     })
 
     it('asks for a device when none is selected', async () => {
@@ -179,7 +69,10 @@ describe('dst-app', () => {
       const el = await mount()
 
       expect(text(el)).toContain('Choose the sensor to configure')
-      expect(el.querySelector('dst-device-status')).toBeNull()
+      expect(el.querySelectorAll('dst-device-picker tbody tr')).toHaveLength(2)
+      expect(el.querySelector('dst-sensor-header h1')?.textContent).toContain(
+        'Airmar DST configuration'
+      )
     })
   })
 
@@ -187,18 +80,18 @@ describe('dst-app', () => {
     it('names the device and where it is on the bus', async () => {
       serve(selected())
 
-      const status = (await mount()).querySelector('dst-device-status')
+      const header = (await mount()).querySelector('dst-sensor-header')
 
-      expect(text(status)).toMatch(/Airmar DST800.*0123456.*address 22/)
+      expect(text(header)).toMatch(/Airmar DST800.*Online.*Address 22.*Serial 0123456/)
     })
 
-    it('says it is waiting while the device has not been heard, rather than showing it as present', async () => {
+    it('says the sensor is offline while it has not been heard, rather than showing it as present', async () => {
       serve(selected({ location: { state: 'waiting', address: 22 }, access: null }))
 
       const el = await mount()
 
-      expect(text(el)).toContain('Waiting for the device')
-      expect(text(el)).not.toContain('address 22')
+      expect(text(el)).toContain('Sensor offline')
+      expect(text(el)).not.toContain('Address 22')
     })
 
     it('follows the device as the event stream reports it, without a reload', async () => {
@@ -208,8 +101,8 @@ describe('dst-app', () => {
       FakeEventSource.latest.push({ type: 'device', data: selected() })
       await settle()
 
-      expect(text(el)).not.toContain('Waiting for the device')
-      expect(text(el)).toContain('address 22')
+      expect(text(el)).not.toContain('Sensor offline')
+      expect(text(el)).toContain('Address 22')
     })
   })
 
@@ -239,7 +132,8 @@ describe('dst-app', () => {
 
       const el = await mount()
 
-      expect(text(el)).toContain('Level 1 refused by the device, asking again in 10:00')
+      expect(text(el)).toContain('The sensor refused Level 1 access')
+      expect(text(el)).toContain('The console asks again in 10:00')
     })
   })
 
@@ -263,14 +157,52 @@ describe('dst-app', () => {
       FakeEventSource.latest.push(simulate(true))
       await settle()
 
-      expect(text(el.querySelector('[role="alert"]'))).toContain(
-        'every device on the NMEA 2000 bus'
-      )
+      expect(text(el.querySelector('[role="alert"]'))).toContain('Every device on the network')
 
       FakeEventSource.latest.push(simulate(false))
       await settle()
 
       expect(el.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    it('turns simulate mode off from the warning, without a confirmation', async () => {
+      const bodies: unknown[] = []
+      serve(selected(), (path, init) => {
+        bodies.push([init?.method, path, JSON.parse(init?.body as string)])
+        return json({ status: 'applied', stored: false, readAt: '2026-09-24T09:00:00.000Z' })
+      })
+      const el = await mount()
+      FakeEventSource.latest.push(simulate(true))
+      await settle()
+
+      button(el.querySelector('[role="alert"]') ?? el, 'Turn off simulate mode').click()
+      await settle()
+
+      expect(bodies).toEqual([['PUT', '/settings/simulateMode', { value: false }]])
+    })
+
+    it.each([
+      [
+        'a refused request',
+        () => new Response('', { status: 401, statusText: 'Unauthorized' }),
+        'admin login'
+      ],
+      [
+        'an answer other than applied',
+        () => json({ status: 'notSent', reason: 'Access Level 1 refused' }),
+        'Not sent: Access Level 1 refused'
+      ]
+    ])('shows %s from Turn off in the warning itself', async (_what, answer, words) => {
+      serve(selected(), answer)
+      const el = await mount()
+      FakeEventSource.latest.push(simulate(true))
+      await settle()
+
+      button(el.querySelector('[role="alert"]') ?? el, 'Turn off simulate mode').click()
+      await settle()
+
+      expect(text(el.querySelector('[role="alert"]'))).toContain(words)
+      expect(text(el)).not.toContain('Could not check what the sensor supports')
     })
 
     it('forgets what it knew about simulate mode when another device is selected', async () => {
@@ -287,51 +219,158 @@ describe('dst-app', () => {
   })
 
   describe('probing', () => {
-    it('probes on request and shows what the device answered', async () => {
-      const requests: unknown[] = []
-      serve(selected(), (path, init) => {
-        requests.push([init?.method, path])
+    it('probes a sensor that is on the bus and has no probe yet, once', async () => {
+      const posts: string[] = []
+      serve(selected({ probe: null }), (path) => {
+        posts.push(path)
         return json(probe)
       })
       const el = await mount()
 
-      button(el, 'Probe').click()
+      expect(posts).toEqual(['/device/probe'])
+      expect(text(el)).not.toContain('Checking what the sensor supports')
+
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
       await settle()
 
-      expect(requests).toEqual([['POST', '/device/probe']])
-      expect(text(el)).toContain('1 of 2 capabilities answered')
+      expect(posts).toHaveLength(1)
+    })
+
+    it('probes a sensor selected while another was still being probed', async () => {
+      const posts: string[] = []
+      let first: (response: Response) => void = () => undefined
+      serve(selected({ probe: null }), (path, init) => {
+        if (init?.method === 'PUT') {
+          return json(
+            selected({ selected: OTHER, location: { state: 'present', address: 35 }, probe: null })
+          )
+        }
+        posts.push(path)
+        return posts.length === 1
+          ? new Promise((resolve) => {
+              first = resolve
+            })
+          : json(probe)
+      })
+      const el = await mount()
+
+      button(el, 'Change sensor').click()
+      await settle()
+      button(el.querySelectorAll('dst-device-picker tbody tr')[1], 'Select').click()
+      await settle()
+      first(json(probe))
+      await settle()
+
+      expect(posts).toHaveLength(2)
+    })
+
+    it('probes again after the plugin restarted under an open console', async () => {
+      const posts: string[] = []
+      serve(selected({ probe: null }), (path) => {
+        posts.push(path)
+        return json(probe)
+      })
+      await mount()
+      const first = FakeEventSource.latest
+      first.onopen?.()
+      expect(posts).toHaveLength(1)
+
+      // The plugin restarts: the stream drops, reopens, and the probe is gone.
+      first.onerror?.()
+      await vi.advanceTimersByTimeAsync(RECONNECT_MS)
+      FakeEventSource.latest.onopen?.()
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+      await settle()
+
+      expect(posts).toEqual(['/device/probe', '/device/probe'])
+    })
+
+    it('waits until the sensor is heard before probing it', async () => {
+      const posts: string[] = []
+      serve(
+        selected({ probe: null, location: { state: 'waiting', address: 22 }, access: null }),
+        (path) => {
+          posts.push(path)
+          return json(probe)
+        }
+      )
+      await mount()
+
+      expect(posts).toEqual([])
+
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+      await settle()
+
+      expect(posts).toEqual(['/device/probe'])
+    })
+
+    it('does not keep probing after the server refused the first one', async () => {
+      const posts: string[] = []
+      serve(selected({ probe: null }), (path) => {
+        posts.push(path)
+        return new Response('', { status: 401, statusText: 'Unauthorized' })
+      })
+      const el = await mount()
+
+      FakeEventSource.latest.push({ type: 'device', data: selected({ probe: null }) })
+      await settle()
+
+      expect(posts).toHaveLength(1)
+      expect(text(el)).toContain('admin login')
+    })
+
+    it('offers to try a failed probe again', async () => {
+      let refuse = true
+      const posts: string[] = []
+      serve(selected({ probe: null }), (path) => {
+        posts.push(path)
+        return refuse
+          ? json({ error: 'The device has not been heard at its address' }, 503)
+          : json(probe)
+      })
+      const el = await mount()
+
+      expect(text(el)).toContain('Could not check what the sensor supports')
+
+      refuse = false
+      button(el, 'Try again').click()
+      await settle()
+
+      expect(posts).toHaveLength(2)
+      expect(text(el)).not.toContain('Could not check what the sensor supports')
     })
 
     it('drops a probe result that returns after another sensor was selected', async () => {
       let answer: (response: Response) => void = () => undefined
       serve(
-        selected(),
+        selected({ probe: null }),
         () =>
           new Promise((resolve) => {
             answer = resolve
           })
       )
       const el = await mount()
-      button(el, 'Probe').click()
-      await settle()
 
       FakeEventSource.latest.push({
         type: 'device',
-        data: selected({ selected: OTHER, location: { state: 'present', address: 35 } })
+        data: selected({
+          selected: OTHER,
+          location: { state: 'waiting', address: 35 },
+          access: null,
+          probe: null
+        })
       })
       answer(json(probe))
       await settle()
 
-      expect(text(el)).not.toContain('capabilities answered')
-      expect(text(el)).toContain('Not probed yet')
+      expect(text(el)).toContain('Checking what the sensor supports')
     })
 
     it('shows the plugin’s reason when a probe cannot run', async () => {
-      serve(selected(), () => json({ error: 'The device has not been heard at its address' }, 503))
+      serve(selected({ probe: null }), () =>
+        json({ error: 'The device has not been heard at its address' }, 503)
+      )
       const el = await mount()
-
-      button(el, 'Probe').click()
-      await settle()
 
       expect(text(el)).toContain('The device has not been heard at its address')
     })
@@ -375,8 +414,10 @@ describe('dst-app', () => {
 
     it('stops loading and closes the event stream when the console is removed', async () => {
       let signal: AbortSignal | undefined
-      vi.mocked(fetch).mockImplementation((_input, init) => {
-        signal = init?.signal ?? undefined
+      vi.mocked(fetch).mockImplementation((input, init) => {
+        if ((input as string).startsWith(API_BASE)) {
+          signal = init?.signal ?? undefined
+        }
         return new Promise(() => undefined)
       })
       const loading = await mount()

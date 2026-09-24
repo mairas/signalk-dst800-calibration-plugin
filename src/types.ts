@@ -97,7 +97,8 @@ export interface SettingInfo {
   qualifiers: readonly Qualifier[] | null
   /**
    * What the last probe found: `yes`, `no`, or `unknown` when it went
-   * unanswered, was never probed, or is not a probed capability.
+   * unanswered or was never probed. Always `yes` for a setting the probe does
+   * not ask about, such as the depth offset, which every sensor has.
    */
   available: 'yes' | 'no' | 'unknown'
 }

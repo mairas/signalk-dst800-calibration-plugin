@@ -4,12 +4,47 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Airmar DST Config</title>
-    <script>
-      // Bootstrap's dark theme, when the browser asks for one: this console is
-      // used at the chart table at night.
-      if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        document.documentElement.dataset.bsTheme = 'dark'
+    <style>
+      /* The admin stylesheet, added below at runtime, supplies everything else. */
+      .dst-header {
+        position: sticky;
+        top: 0;
+        z-index: 1020;
+        background: var(--bs-body-bg, #fff);
+        border-bottom: 1px solid var(--bs-border-color, #dee2e6);
+        box-shadow: 0 0.125rem 0.25rem rgb(0 0 0 / 7.5%);
       }
+      /* Leave the sticky header's height clear when jumping to a section. */
+      section[id] {
+        scroll-margin-top: 8rem;
+      }
+      .dst-value-input {
+        max-width: 16rem;
+      }
+      .dst-menu {
+        position: relative;
+      }
+      .dst-menu > summary {
+        list-style: none;
+      }
+      .dst-menu > summary::-webkit-details-marker {
+        display: none;
+      }
+      .dst-menu-list {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 0.25rem);
+        min-width: 12rem;
+        padding: 0.25rem 0;
+        z-index: 1030;
+      }
+      @media (max-width: 575.98px) {
+        dst-app .btn {
+          min-height: 44px;
+        }
+      }
+    </style>
+    <script>
       // Borrow the Signal K admin UI's stylesheet so the console looks native.
       // Its file name carries a build hash, so read it from the admin page
       // itself; server 2.33 serves no Vite manifest. Failure is not fatal.
