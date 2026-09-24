@@ -117,7 +117,7 @@ function settingInfo(entry: AnySetting, runtime: ConsoleRuntime): SettingInfo {
   const capability = entry.capability
   const state =
     capability === null
-      ? undefined
+      ? 'supported'
       : result?.capabilities.find((c) => capabilityId(c.capability) === capabilityId(capability))
           ?.result.state
   return {

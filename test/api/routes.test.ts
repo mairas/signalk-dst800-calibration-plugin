@@ -594,6 +594,7 @@ describe('REST API', () => {
       expect(available('speedCurve')).toBe('yes')
       expect(available('temperatureOffset')).toBe('no')
       expect(available('speedOfSound')).toBe('unknown')
+      expect(available('depthOffset')).toBe('yes')
     })
 
     it('runs one probe for two requests that overlap', async () => {
