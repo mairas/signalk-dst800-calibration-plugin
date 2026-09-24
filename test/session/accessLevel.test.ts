@@ -88,4 +88,45 @@ describe('AccessLevelState', () => {
     expect(state.recordRefusal(T0)).toBe(false)
     expect(state.isUnavailable(T0)).toBe(false)
   })
+
+  describe('as the console shows it', () => {
+    it('is locked before the first unlock', () => {
+      expect(new AccessLevelState().view(T0)).toEqual({ state: 'locked' })
+    })
+
+    it('is granted until the device expires it, with the time left', () => {
+      const state = new AccessLevelState()
+      state.recordUnlock(T0)
+
+      expect(state.view(T0 + 1000)).toEqual({
+        state: 'granted',
+        expiresInMs: ACCESS_LEVEL_1_TTL_MS - 1000
+      })
+      expect(state.view(T0 + ACCESS_LEVEL_1_TTL_MS)).toEqual({ state: 'locked' })
+    })
+
+    it('is locked once the device has denied access, and when the clock went backwards', () => {
+      const denied = new AccessLevelState()
+      denied.recordUnlock(T0)
+      denied.recordDenied()
+      const stepped = new AccessLevelState()
+      stepped.recordUnlock(T0)
+
+      expect(denied.view(T0 + 1)).toEqual({ state: 'locked' })
+      expect(stepped.view(T0 - 1)).toEqual({ state: 'locked' })
+    })
+
+    it('is unavailable after the refusals that make it so, until they lapse', () => {
+      const state = new AccessLevelState()
+      for (let i = 0; i < REFUSALS_BEFORE_UNAVAILABLE; i += 1) {
+        state.recordRefusal(T0)
+      }
+
+      expect(state.view(T0 + 1000)).toEqual({
+        state: 'unavailable',
+        retryInMs: ACCESS_LEVEL_1_TTL_MS - 1000
+      })
+      expect(state.view(T0 + ACCESS_LEVEL_1_TTL_MS)).toEqual({ state: 'locked' })
+    })
+  })
 })

@@ -4,7 +4,7 @@ import { addressClaim, pgnReply } from '../helpers/replies.js'
 import { sourcesTree, type TreeDevice } from '../helpers/sources.js'
 import { DeviceRegistry, PRESENCE_WINDOW_MS, parseCanName } from '../../src/devices/registry.js'
 import type { DeviceKey } from '../../src/types.js'
-import { PGN } from '../../src/protocol/pids.js'
+import { AIRMAR, PGN } from '../../src/protocol/pids.js'
 
 const DST: TreeDevice = {
   address: 22,
@@ -61,6 +61,10 @@ describe('DeviceRegistry', () => {
   const heard = (src: number) => {
     bus.deliver(pgnReply(PGN.distanceLog, { src }))
   }
+  /** One of Airmar's own periodic messages from `src`, which is what makes a candidate. */
+  const speaksAirmar = (src: number) => {
+    bus.deliver(pgnReply(PGN.depthQualityFactor, { src }))
+  }
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -75,13 +79,17 @@ describe('DeviceRegistry', () => {
   })
 
   describe('candidates', () => {
-    it('lists a device in the sources tree with its model and serial', () => {
+    it('lists a device once it is heard sending Airmar’s own messages, with its model and serial', () => {
       build([DST])
+
+      expect(registry.candidates()).toEqual([])
+
+      speaksAirmar(22)
 
       expect(registry.candidates()).toEqual([
         {
           key: DST_KEY,
-          location: { state: 'waiting', address: 22 },
+          location: { state: 'present', address: 22 },
           manufacturerName: 'Airmar',
           modelId: 'DST800',
           serial: 'SN42'
@@ -89,20 +97,93 @@ describe('DeviceRegistry', () => {
       ])
     })
 
-    it('offers a device whose Address Claim names another manufacturer', () => {
+    it('lists a device whose Address Claim names another manufacturer, when its frames carry Airmar’s code', () => {
       build([DST, REBADGED])
 
-      expect(registry.candidates().map((c) => c.key)).toEqual([DST_KEY, REBADGED_KEY])
+      speaksAirmar(40)
+
+      expect(registry.candidates().map((c) => c.key)).toEqual([REBADGED_KEY])
+    })
+
+    it('does not list a device sending the same PGN numbers under another manufacturer’s code', () => {
+      build([{ address: 50, uniqueNumber: 9, manufacturerCode: 'Raymarine' }])
+
+      bus.deliver({
+        pgn: PGN.depthQualityFactor,
+        src: 50,
+        dst: 255,
+        prio: 7,
+        fields: { manufacturerCode: 'Raymarine', industryCode: 'Marine Industry' }
+      })
+
+      expect(registry.candidates()).toEqual([])
+    })
+
+    it('reads Airmar’s code as a raw number too, when names are not resolved', () => {
+      build([DST])
+
+      bus.deliver({
+        pgn: PGN.speedPulseCount,
+        src: 22,
+        dst: 255,
+        prio: 7,
+        fields: { manufacturerCode: AIRMAR.manufacturerCode, industryCode: AIRMAR.industryCode }
+      })
+
+      expect(registry.candidates().map((c) => c.key)).toEqual([DST_KEY])
+    })
+
+    it('does not list a device heard only on standard PGNs', () => {
+      build([DST])
+
+      heard(22)
+
+      expect(registry.candidates()).toEqual([])
+    })
+
+    it('lists a sensor whose frames arrive before the sources tree names it', () => {
+      build([])
+      speaksAirmar(22)
+
+      tree = sourcesTree([DST])
+      speaksAirmar(22)
+
+      expect(registry.candidates().map((c) => c.key)).toEqual([DST_KEY])
+    })
+
+    it('does not pass the mark on to a device that takes the address over', () => {
+      const OTHER: TreeDevice = { address: 22, uniqueNumber: 5, manufacturerCode: 'Garmin' }
+      build([DST])
+      speaksAirmar(22)
+
+      bus.deliver(addressClaim(DST, 23))
+      bus.deliver(addressClaim(OTHER, 22))
+      tree = sourcesTree([{ ...DST, address: 23 }, OTHER])
+      heard(22)
+
+      expect(registry.candidates().map((c) => c.key)).toEqual([DST_KEY])
+    })
+
+    it('reports the change when a sensor first speaks', () => {
+      build([DST])
+      heard(22)
+      const before = changes
+
+      speaksAirmar(22)
+
+      expect(changes).toBe(before + 1)
     })
 
     it('names no manufacturer where canboatjs has only the code', () => {
       build([{ address: 50, uniqueNumber: 9, manufacturerCode: 2000 }])
+      speaksAirmar(50)
 
       expect(registry.candidates()[0]?.manufacturerName).toBeNull()
     })
 
     it('lists a device seen through two gateways once', () => {
       build([DST, { ...DST, label: 'can1' }])
+      speaksAirmar(22)
 
       expect(registry.candidates()).toHaveLength(1)
     })
@@ -120,6 +201,7 @@ describe('DeviceRegistry', () => {
           '254': { n2k: { src: '254', canName: 'c097820010e1e241' } }
         }
       }
+      speaksAirmar(22)
 
       expect(registry.candidates().map((c) => c.key)).toEqual([DST_KEY])
     })
@@ -127,6 +209,7 @@ describe('DeviceRegistry', () => {
     it('survives a sources tree that is not an object at all', () => {
       build([])
       tree = 'nothing' as unknown as Record<string, unknown>
+      speaksAirmar(22)
 
       expect(registry.candidates()).toEqual([])
     })
@@ -238,7 +321,7 @@ describe('DeviceRegistry', () => {
         { ...DST, address: 31 },
         { ...DST, address: 22 }
       ])
-      heard(31)
+      speaksAirmar(31)
 
       expect(registry.locate(DST_KEY)).toEqual({ state: 'present', address: 31 })
       expect(registry.candidates()).toHaveLength(1)

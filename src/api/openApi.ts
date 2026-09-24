@@ -9,6 +9,7 @@
  */
 
 import type { CapabilityState, Level1State, ProbeResult } from '../devices/probe.js'
+import type { AccessView } from '../session/accessLevel.js'
 import type { ReadResult, WriteResult } from '../settings/operations.js'
 import type { PgnListResult, PgnWriteResult } from '../settings/pgnIntervals.js'
 import {
@@ -56,6 +57,11 @@ const CAPABILITY_STATES = keysOf({
 
 const LEVEL1_STATES = keysOf({ granted: true, refused: true, noAnswer: true } satisfies Record<
   Level1State['state'],
+  true
+>)
+
+const ACCESS_STATES = keysOf({ granted: true, locked: true, unavailable: true } satisfies Record<
+  AccessView['state'],
   true
 >)
 
@@ -223,9 +229,25 @@ const pgnWrite = object(
   ['observedIntervalMs', 'requestedIntervalMs', 'reason', 'detail', 'warning']
 )
 
+const accessView = object(
+  {
+    state: { type: 'string', enum: ACCESS_STATES },
+    expiresInMs: { type: 'integer', description: 'When `granted`: until the device drops it' },
+    retryInMs: {
+      type: 'integer',
+      description: 'When `unavailable`: until the plugin asks for Level 1 again'
+    }
+  },
+  ['expiresInMs', 'retryInMs']
+)
+
 const selection = object({
   selected: nullable(deviceKey),
   location: nullable(location),
+  access: nullable({
+    ...accessView,
+    description: 'Access Level 1; null until the device has been heard'
+  }),
   probe: nullable({ ...probeResult, description: 'The last complete probe of this device' })
 })
 
@@ -391,7 +413,7 @@ export const openApi = {
   paths: {
     '/api/devices': {
       get: {
-        summary: 'Every NMEA 2000 device the server knows, configurable or not',
+        summary: 'The devices heard sending Airmar’s own messages, whatever brand they claim',
         responses: {
           '200': {
             description: 'Candidates',
@@ -518,7 +540,7 @@ export const openApi = {
       get: {
         summary: 'Server-Sent Events for every open console',
         description:
-          'Starts with `devices` and `device`. Then `devices` when the device list changes, `device` when the selection, the selected device’s location or its cached probe changes (each carries the same body as the matching GET), `setting` after each read or write of a setting that reached the session, carrying `{ id, qualifier, operation, result }`, and `reset` after a reset or restore that reached the bus, carrying its result: every value a console holds for the device is then stale. While a console is open, the plugin reads simulate mode every minute and pushes it as a `setting` event. A comment line every 25 s keeps idle proxies from closing the stream. The stream ends when the plugin stops.',
+          'Starts with `devices` and `device`. Then `devices` when the device list changes, `device` when the selection, the selected device’s location, its access level or its cached probe changes (each carries the same body as the matching GET), `setting` after each read or write of a setting that reached the session, carrying `{ id, qualifier, operation, result }`, and `reset` after a reset or restore that reached the bus, carrying its result: every value a console holds for the device is then stale. While a console is open, the plugin reads simulate mode every minute and pushes it as a `setting` event. A comment line every 25 s keeps idle proxies from closing the stream. The stream ends when the plugin stops.',
         responses: {
           '200': {
             description: 'An event stream',

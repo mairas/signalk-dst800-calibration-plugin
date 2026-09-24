@@ -5,22 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Airmar DST Config</title>
     <script>
-      // Inherit the Signal K admin UI stylesheet so the console looks native.
-      // The manifest is served from 2.27 onwards; failure is not fatal.
-      fetch('/admin/.vite/manifest.json')
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no manifest'))))
-        .then((manifest) => {
-          for (const entry of Object.values(manifest)) {
-            for (const css of entry.css ?? []) {
-              const link = document.createElement('link')
-              link.rel = 'stylesheet'
-              link.href = `/admin/${css}`
-              document.head.appendChild(link)
-            }
+      // Bootstrap's dark theme, when the browser asks for one: this console is
+      // used at the chart table at night.
+      if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.documentElement.dataset.bsTheme = 'dark'
+      }
+      // Borrow the Signal K admin UI's stylesheet so the console looks native.
+      // Its file name carries a build hash, so read it from the admin page
+      // itself; server 2.33 serves no Vite manifest. Failure is not fatal.
+      fetch('/admin/', { credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+        .then((page) => {
+          const admin = new DOMParser().parseFromString(page, 'text/html')
+          for (const sheet of admin.querySelectorAll('link[rel="stylesheet"]')) {
+            const link = document.createElement('link')
+            link.rel = 'stylesheet'
+            link.href = new URL(sheet.getAttribute('href'), new URL('/admin/', location.href)).href
+            document.head.appendChild(link)
           }
         })
         .catch(() => {
-          /* styling falls back to the page's own CSS */
+          /* the console renders unstyled */
         })
     </script>
   </head>

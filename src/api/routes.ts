@@ -56,6 +56,8 @@ export interface RouteContext {
   events: EventStream
   /** Push `event` to the open consoles, and act on what it says about simulate mode. */
   publish(event: ServerEvent): void
+  /** A console opened the event stream. */
+  consoleOpened(): void
 }
 
 const NOT_RUNNING = 'The plugin is not running'
@@ -420,6 +422,7 @@ export function registerRoutes(router: PluginRouter, context: RouteContext): voi
         { type: 'devices', data: runtime.devicesView() },
         { type: 'device', data: runtime.deviceView() }
       ])
+      context.consoleOpened()
     }
   })
 }

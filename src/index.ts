@@ -95,17 +95,32 @@ export default function plugin(app: ServerAPI): Plugin {
     }
   }
 
-  /** Read simulate mode again, while someone is watching the console. */
-  const rereadSimulate = async (): Promise<void> => {
+  /** The re-read in flight, which every later trigger joins. */
+  let rereading: Promise<void> | null = null
+
+  /**
+   * Read simulate mode again, while someone is watching the console.
+   *
+   * At most one read is in flight. Each console that opens triggers one, and
+   * a readonly client reopening its stream in a loop would otherwise fill the
+   * session's queue with Level 1 reads.
+   */
+  const rereadSimulate = (): Promise<void> => {
     const session = runtime?.session ?? null
     if (!events.hasClients || session === null) {
-      return
+      return Promise.resolve()
     }
-    const result = await readSetting(session, 'simulateMode')
-    publish({
-      type: 'setting',
-      data: { id: 'simulateMode', qualifier: null, operation: 'read', result }
-    })
+    rereading ??= readSetting(session, 'simulateMode')
+      .then((result) => {
+        publish({
+          type: 'setting',
+          data: { id: 'simulateMode', qualifier: null, operation: 'read', result }
+        })
+      })
+      .finally(() => {
+        rereading = null
+      })
+    return rereading
   }
 
   /**
@@ -227,6 +242,9 @@ export default function plugin(app: ServerAPI): Plugin {
         runtime: () => runtime,
         events,
         publish,
+        consoleOpened: () => {
+          rereadSimulate().catch(report)
+        },
         select: async (key) => {
           await saveSelection(key)
           runtime?.select(key)

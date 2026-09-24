@@ -20,7 +20,7 @@
  */
 
 import type { DecodedPgn } from '../protocol/messages.js'
-import { PGN } from '../protocol/pids.js'
+import { AIRMAR, PGN } from '../protocol/pids.js'
 import { MANUFACTURER_CODE_BITS, UNIQUE_NUMBER_BITS, type DeviceKey } from '../types.js'
 
 /**
@@ -179,6 +179,30 @@ export function claimOf(pgn: DecodedPgn): Claim | null {
   return { uniqueNumber, manufacturer: manufacturerCode }
 }
 
+/** Airmar's own periodic messages: depth quality, speed pulse count, device information. */
+const AIRMAR_MESSAGES: readonly number[] = [
+  PGN.depthQualityFactor,
+  PGN.speedPulseCount,
+  PGN.deviceInformation
+]
+
+/**
+ * One of Airmar's periodic messages, by the manufacturer code inside it.
+ *
+ * The PGN alone says nothing: 65280–65535 is shared by every manufacturer.
+ * canboatjs renders the code as `Airmar`, or as 135 with names unresolved.
+ */
+const isAirmarMessage = (pgn: DecodedPgn): boolean => {
+  if (!AIRMAR_MESSAGES.includes(pgn.pgn)) {
+    return false
+  }
+  const code = pgn.fields?.manufacturerCode
+  return code === 'Airmar' || code === AIRMAR.manufacturerCode
+}
+
+const keyId = (key: DeviceKey): string =>
+  `${String(key.manufacturerCode)}:${String(key.uniqueNumber)}`
+
 export class DeviceRegistry {
   private readonly sources: () => unknown
   private readonly now: () => number
@@ -197,6 +221,14 @@ export class DeviceRegistry {
    */
   private readonly claims = new Map<string, LiveClaim>()
   private readonly lastHeard = new Map<number, number>()
+  /** Devices heard sending Airmar's own periodic messages since start. */
+  private readonly speakers = new Set<string>()
+  /**
+   * Addresses whose Airmar messages are already attributed to a device.
+   * A claim at an address clears it, so a device that takes an address over
+   * does not inherit the mark.
+   */
+  private readonly attributed = new Set<number>()
   private signature = ''
 
   constructor(options: DeviceRegistryOptions) {
@@ -212,18 +244,27 @@ export class DeviceRegistry {
     }, SWEEP_MS)
   }
 
-  /** Every device the tree knows, configurable or not. */
+  /**
+   * The devices heard speaking Airmar's protocol.
+   *
+   * A device qualifies once it sends one of Airmar's periodic proprietary
+   * messages with manufacturer code 135 inside the frame, which a rebadged
+   * unit does whatever brand its Address Claim names. Whether it is
+   * configurable is still the probe's answer.
+   */
   candidates(): Candidate[] {
-    return this.entries().map((entry) => {
-      const location = this.locateEntry(entry.key, entry)
-      return {
-        key: entry.key,
-        location,
-        manufacturerName: typeof entry.manufacturer === 'string' ? entry.manufacturer : null,
-        modelId: entry.modelId,
-        serial: entry.serial
-      }
-    })
+    return this.devices().filter((device) => this.speakers.has(keyId(device.key)))
+  }
+
+  /** Every device the tree knows, where the registry places it. */
+  private devices(): Candidate[] {
+    return this.entries().map((entry) => ({
+      key: entry.key,
+      location: this.locateEntry(entry.key, entry),
+      manufacturerName: typeof entry.manufacturer === 'string' ? entry.manufacturer : null,
+      modelId: entry.modelId,
+      serial: entry.serial
+    }))
   }
 
   locate(key: DeviceKey): Location {
@@ -344,8 +385,10 @@ export class DeviceRegistry {
       const claim = pgn.pgn === PGN.addressClaim ? claimOf(pgn) : null
       if (claim !== null) {
         this.recordClaim(claim, src)
+        this.attributed.delete(src)
       }
-      if (claim !== null || (isUnicast(src) && !wasPresent)) {
+      const spoke = isAirmarMessage(pgn) && this.attribute(src)
+      if (claim !== null || spoke || (isUnicast(src) && !wasPresent)) {
         this.publishIfChanged()
       }
     } catch (error) {
@@ -353,12 +396,38 @@ export class DeviceRegistry {
     }
   }
 
+  /**
+   * Mark the device at `address` as speaking Airmar's protocol.
+   *
+   * Resolved once per address and claim, not on every frame: the device
+   * sends these several times a second. Returns true when that is news.
+   * Where no device is known at the address yet, the next frame tries again.
+   */
+  private attribute(address: number): boolean {
+    if (!isUnicast(address) || this.attributed.has(address)) {
+      return false
+    }
+    const entry = this.entries().find((e) => this.addressOf(e.key, e) === address)
+    if (entry === undefined) {
+      return false
+    }
+    this.attributed.add(address)
+    const id = keyId(entry.key)
+    const news = !this.speakers.has(id)
+    this.speakers.add(id)
+    return news
+  }
+
   private recordClaim(claim: Claim, address: number): void {
     this.claims.set(claimId(claim), { claim, address })
   }
 
+  /**
+   * Covers every device, not only the candidates: the owner of a selection
+   * follows its device through `onChange` whether or not it has spoken yet.
+   */
   private currentSignature(): string {
-    return JSON.stringify(this.candidates())
+    return JSON.stringify([this.devices(), [...this.speakers]])
   }
 
   private publishIfChanged(): void {

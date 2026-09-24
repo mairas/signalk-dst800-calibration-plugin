@@ -27,8 +27,8 @@ export interface RuntimeOptions {
   /** Monotonic milliseconds. */
   now?: () => number
   /**
-   * Called when the device list, the selection, the selected device's location
-   * or its cached probe may have changed. Carries no payload: re-read the views.
+   * Called when the device list, the selection, the selected device's location,
+   * its access level or its cached probe may have changed. Carries no payload: re-read the views.
    */
   onChange?: (runtime: ConsoleRuntime) => void
 }
@@ -97,7 +97,15 @@ export class ConsoleRuntime {
             registry: this.registry,
             key,
             createSession: (address) =>
-              new DeviceSession({ address, bus: this.bus, now: this.now, onError: this.onError }),
+              new DeviceSession({
+                address,
+                bus: this.bus,
+                now: this.now,
+                onError: this.onError,
+                onAccessChange: () => {
+                  this.changed()
+                }
+              }),
             onChange: () => {
               this.changed()
             }
@@ -207,6 +215,7 @@ export class ConsoleRuntime {
     return {
       selected: key,
       location: this.location,
+      access: this.session?.access ?? null,
       probe: key === null ? null : (this.probes.get(key) ?? null)
     }
   }

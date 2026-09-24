@@ -21,7 +21,7 @@ import { decodeAcknowledge, unlockLevel1 } from '../protocol/codec.js'
 import type { AcknowledgeResult } from '../protocol/codec.js'
 import type { DecodedPgn, OutgoingPgn, OutgoingRaw } from '../protocol/messages.js'
 import { AirmarPid, PARAM, PGN, pidFromName } from '../protocol/pids.js'
-import { AccessLevelState } from './accessLevel.js'
+import { AccessLevelState, type AccessView } from './accessLevel.js'
 import { ACK_OK, TEMPORARY_ERROR, isAccessDenied } from './outcome.js'
 import type { Outcome } from './outcome.js'
 
@@ -108,6 +108,12 @@ export interface DeviceSessionOptions {
   onObservation?: (pgn: DecodedPgn) => void
   /** Reported instead of thrown, so a bad reply never reaches the server. */
   onError?: (error: unknown) => void
+  /**
+   * Called after the session unlocks, is refused, or drops its grant. A grant
+   * or a refusal lapsing with time is not a change: read `access` for the
+   * time left.
+   */
+  onAccessChange?: () => void
   timeoutMs?: number
   /**
    * Monotonic milliseconds, for the Access Level lifetime and the late-reply
@@ -229,7 +235,8 @@ export class DeviceSession {
   private readonly now: () => number
   private readonly unsubscribe: () => void
 
-  private readonly access = new AccessLevelState()
+  private readonly level1 = new AccessLevelState()
+  private readonly onAccessChange: (() => void) | undefined
   private readonly queue: (() => Promise<void>)[] = []
   private readonly coalesced = new Map<
     string,
@@ -251,6 +258,7 @@ export class DeviceSession {
     this.bus = options.bus
     this.onObservation = options.onObservation
     this.onError = options.onError
+    this.onAccessChange = options.onAccessChange
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.adaptiveTimeoutMs = this.timeoutMs
     this.now = options.now ?? (() => performance.now())
@@ -288,8 +296,21 @@ export class DeviceSession {
     return this.adaptiveTimeoutMs
   }
 
+  /** Tell the owner the access level changed. Never throws: it runs inside the queue. */
+  private accessChanged(): void {
+    try {
+      this.onAccessChange?.()
+    } catch (error) {
+      this.report(error)
+    }
+  }
+
+  get access(): AccessView {
+    return this.level1.view(this.now())
+  }
+
   get level1Unavailable(): boolean {
-    return this.access.isUnavailable(this.now())
+    return this.level1.isUnavailable(this.now())
   }
 
   /**
@@ -361,7 +382,8 @@ export class DeviceSession {
       if (options.requiresLevel1 === true) {
         // Nothing answers this frame, so a grant the device dropped at a power
         // cycle would cost it silently. Unlock afresh rather than trust the record.
-        this.access.forget()
+        this.level1.forget()
+        this.accessChanged()
         const blocked = await this.ensureLevel1()
         if (blocked !== null) {
           return blocked
@@ -373,7 +395,8 @@ export class DeviceSession {
         this.report(error)
         return { status: 'unknown', reason: 'The frame could not be put on the bus' }
       }
-      this.access.forget()
+      this.level1.forget()
+      this.accessChanged()
       this.forgetGateway()
       return { status: 'answered', value: [] }
     })
@@ -553,7 +576,8 @@ export class DeviceSession {
       }
       if (result.retry === 'accessDenied' && !retriedDenied) {
         retriedDenied = true
-        this.access.recordDenied()
+        this.level1.recordDenied()
+        this.accessChanged()
         const blocked = await this.ensureLevel1()
         if (blocked === null) {
           continue
@@ -576,10 +600,10 @@ export class DeviceSession {
    * ours. A silent unlock counts as nothing: silence is not a refusal.
    */
   private async ensureLevel1(): Promise<Outcome<never[]> | null> {
-    if (this.access.isUnavailable(this.now())) {
+    if (this.level1.isUnavailable(this.now())) {
       return { status: 'rejected', reason: 'Access Level 1 is unavailable on this device' }
     }
-    if (!this.access.needsUnlock(this.now())) {
+    if (!this.level1.needsUnlock(this.now())) {
       return null
     }
     const result = await this.attempt<never>({ message: unlockLevel1(this.address) })
@@ -589,11 +613,13 @@ export class DeviceSession {
       return closed
     }
     if (result.outcome.status === 'answered') {
-      this.access.recordUnlock(this.now())
+      this.level1.recordUnlock(this.now())
+      this.accessChanged()
       return null
     }
     if (result.outcome.status === 'rejected') {
-      const final = this.access.recordRefusal(this.now())
+      const final = this.level1.recordRefusal(this.now())
+      this.accessChanged()
       const reason = final
         ? `Access Level 1 is unavailable on this device: ${result.outcome.reason}`
         : `Access Level 1 refused: ${result.outcome.reason}`

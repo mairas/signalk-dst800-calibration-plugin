@@ -85,6 +85,10 @@ describe('REST API', () => {
   const heard = () => {
     deliver(pgnReply(PGN.distanceLog, { src: DST.address }))
   }
+  /** One of Airmar's own periodic messages from the DST, which puts it in the device list. */
+  const speaksAirmar = () => {
+    deliver(pgnReply(PGN.depthQualityFactor, { src: DST.address }))
+  }
   const flush = () => vi.advanceTimersByTimeAsync(0)
   const depthReply = (offset: number): DecodedPgn => ({
     ...decode({ pgn: PGN.waterDepth, dst: 255, prio: 3, fields: { sid: 1, depth: 12, offset } }),
@@ -219,7 +223,7 @@ describe('REST API', () => {
   describe('response shapes', () => {
     it('answers each list and selection with the fields the document names', async () => {
       start({ selectedDevice: DST_KEY })
-      heard()
+      speaksAirmar()
       const devices = (await call('get', '/api/devices')).body as { candidates: unknown[] }
       const settings = (await call('get', '/api/settings')).body as { settings: unknown[] }
 
@@ -261,13 +265,17 @@ describe('REST API', () => {
   })
 
   describe('devices', () => {
-    it('lists the devices in the sources tree', async () => {
+    it('lists only the devices heard speaking Airmar’s protocol', async () => {
+      app.sources = sourcesTree([DST, { ...DST, address: 40, uniqueNumber: 9, modelId: 'X' }])
       start()
-      const response = await call('get', '/api/devices')
 
-      expect(response.body).toMatchObject({
+      expect((await call('get', '/api/devices')).body).toEqual({ candidates: [] })
+
+      speaksAirmar()
+
+      expect((await call('get', '/api/devices')).body).toMatchObject({
         candidates: [
-          { key: DST_KEY, modelId: 'DST800', location: { state: 'waiting', address: 22 } }
+          { key: DST_KEY, modelId: 'DST800', location: { state: 'present', address: 22 } }
         ]
       })
     })
@@ -714,6 +722,9 @@ describe('REST API', () => {
       await vi.advanceTimersByTimeAsync(60_000)
       await probed
       const { stream } = openStream()
+      // Opening the stream reads simulate mode, and this device's PID 35 reply
+      // carries no value, so the read holds the queue until it times out.
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
       const pending = call('post', '/api/device/reset')
       await flush()
 
@@ -1012,6 +1023,32 @@ describe('REST API', () => {
       expect(notices()[0]).toMatchObject(notified('warn'))
     })
 
+    it('reads simulate mode as soon as a console opens, so its warning is not a minute late', async () => {
+      simulating = true
+      const { stream } = openStream()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(named(stream, 'setting').at(-1)?.data).toMatchObject({
+        id: 'simulateMode',
+        result: { status: 'answered', value: true }
+      })
+    })
+
+    it('reads simulate mode once for consoles that open while a read is still waiting', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      app.events.removeAllListeners('nmea2000JsonOut')
+      app.events.on('nmea2000JsonOut', (message: OutgoingPgn) => sent.push(message))
+      const before = sent.length
+
+      for (let i = 0; i < 5; i += 1) {
+        openStream()
+      }
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS * 8)
+
+      expect(sent.length - before).toBe(1)
+    })
+
     it('re-reads simulate mode while a console is open, and only then', async () => {
       simulating = true
       await vi.advanceTimersByTimeAsync(SIMULATE_REREAD_MS)
@@ -1093,7 +1130,7 @@ describe('REST API', () => {
     it('pushes the device list when a model arrives after the claim', async () => {
       app.sources = sourcesTree([{ ...DST, modelId: undefined }])
       start({ selectedDevice: DST_KEY })
-      heard()
+      speaksAirmar()
       const { stream } = openStream()
       app.sources = sourcesTree([DST])
       await vi.advanceTimersByTimeAsync(1_000)
@@ -1126,8 +1163,8 @@ describe('REST API', () => {
 
     it('pushes each write with its setting, qualifier and result', async () => {
       start({ selectedDevice: DST_KEY })
-      heard()
       const { stream } = openStream()
+      heard()
       const pending = call('put', '/api/settings/:id', {
         params: { id: 'depthOffset' },
         body: { value: 0.35 }
@@ -1186,15 +1223,16 @@ describe('REST API', () => {
       expect(named(stream, 'device').at(-1)?.data).toEqual({
         selected: null,
         location: null,
+        access: null,
         probe: null
       })
     })
 
     it('pushes the selected device once a probe completes', async () => {
       start({ selectedDevice: DST_KEY })
+      const { stream } = openStream()
       heard()
       respondLikeTheDevice()
-      const { stream } = openStream()
       const pending = call('post', '/api/device/probe')
       // Well inside the presence window, so no change of location sends it.
       await vi.advanceTimersByTimeAsync(1_000)
@@ -1204,6 +1242,26 @@ describe('REST API', () => {
         location: { state: 'present' },
         probe: { configurable: 'yes' }
       })
+    })
+
+    it('pushes the selected device when the access level changes, with the time left', async () => {
+      start({ selectedDevice: DST_KEY })
+      const { stream } = openStream()
+      heard()
+      const before = named(stream, 'device').length
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({ access: { state: 'locked' } })
+
+      const pending = call('get', '/api/settings/:id', { params: { id: 'speedOfSound' } })
+      await flush()
+      deliver(acknowledge({ acknowledgedPgn: PGN.accessLevel }, from))
+      await flush()
+
+      expect(named(stream, 'device')).toHaveLength(before + 1)
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({
+        access: { state: 'granted', expiresInMs: expect.any(Number) as unknown }
+      })
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await pending
     })
 
     it('stops writing to a client that has gone', async () => {
