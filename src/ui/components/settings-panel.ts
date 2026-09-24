@@ -15,8 +15,10 @@ import { ApiError, describeFailure, request } from '../api.js'
 import { sameCurve } from '../curve.js'
 import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
+import { routeOf, type RestartAction, type RestartRequest, type Restarted } from '../restart.js'
 import {
   SECTIONS,
+  type CustomSection,
   TEMPERATURE_SOURCES,
   VIEWS,
   age,
@@ -31,7 +33,7 @@ import { EMPTY_ROW, type RowState, type WriteRequest } from './setting-row.js'
 import './setting-row.js'
 import './pgn-table.js'
 import './snapshot-panel.js'
-import type { RestoreRequest } from './pgn-table.js'
+import './danger-zone.js'
 
 /** How often the read age moves on screen. */
 const TICK_MS = 5000
@@ -41,9 +43,6 @@ const PRODUCT = 'productInformation'
 
 /** The section that holds the transmitted PGNs, below its settings. */
 const PGN_SECTION = 'network'
-
-/** The section that saves and loads snapshots rather than listing settings. */
-const SNAPSHOT_SECTION = 'snapshots'
 
 /** Its setting that decides whether the intervals set per PGN apply. */
 const OVERRIDE = 'transmissionIntervalOverride'
@@ -86,9 +85,12 @@ export class SettingsPanel extends LightElement {
   @state() private reading = false
   @state() private pgns: PgnListResult | null = null
   @state() private pgnsError: string | null = null
-  /** A restore of default intervals or priorities, which restarts the sensor and outlives the table. */
-  @state() private restoring = false
-  @state() private restored: ResetResult | null = null
+  /**
+   * An action that restarts the sensor. The sections that offer them vanish
+   * while the sensor is away, so the panel keeps how it went.
+   */
+  @state() private restarting: RestartAction | null = null
+  @state() private restarted: Restarted | null = null
 
   private ticker: ReturnType<typeof setInterval> | null = null
   private probeSeen: string | null = null
@@ -130,7 +132,7 @@ export class SettingsPanel extends LightElement {
       this.probeSeen = null
       this.pgns = null
       this.pgnsError = null
-      this.restored = null
+      this.restarted = null
     }
   }
 
@@ -230,21 +232,32 @@ export class SettingsPanel extends LightElement {
     this.pgnsError = failure
   }
 
-  private async restore(event: RestoreRequest): Promise<void> {
+  private async restart(event: RestartRequest): Promise<void> {
     const key = this.selected
-    this.restoring = true
-    this.restored = null
+    const { action } = event.detail
+    const { path, body } = routeOf(action)
+    this.restarting = action
+    this.restarted = null
     let result: ResetResult
     try {
-      result = await request<ResetResult>('POST', '/device/restore', {
-        option: event.detail.option
-      })
+      result = await request<ResetResult>('POST', path, body)
     } catch (cause) {
       result = { status: 'notSent', reason: describeFailure(cause) }
     }
-    this.restoring = false
+    this.restarting = null
     if (sameKey(this.selected, key)) {
-      this.restored = result
+      this.restarted = { action, result }
+    }
+  }
+
+  /** The PGN table's restores, of the restart actions in flight or done. */
+  private pgnRestore(): { restoring: boolean; restored: ResetResult | null } {
+    const ours = (action: RestartAction | undefined) =>
+      action === 'updateRates' || action === 'priorities'
+    const restarted = this.restarted
+    return {
+      restoring: ours(this.restarting ?? undefined),
+      restored: restarted !== null && ours(restarted.action) ? restarted.result : null
     }
   }
 
@@ -399,25 +412,42 @@ export class SettingsPanel extends LightElement {
     return this.row(info, { id: info.id, qualifier: null }, view.label, view.help ?? '')
   }
 
+  private custom(id: string, title: string, kind: CustomSection) {
+    return html`
+      <section
+        id=${id}
+        class=${`card mb-3 ${kind === 'danger' ? 'border-danger-subtle' : ''}`}
+        aria-labelledby=${`${id}-title`}
+      >
+        <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
+        ${
+          kind === 'snapshots'
+            ? html`<dst-snapshots
+                .selected=${this.selected}
+                .units=${this.units}
+                .disabled=${!this.present}
+              ></dst-snapshots>`
+            : html`<dst-danger-zone
+                .disabled=${!this.present}
+                .restarting=${this.restarting}
+                .restarted=${this.restarted}
+                @restart=${(event: RestartRequest) => this.restart(event)}
+              ></dst-danger-zone>`
+        }
+      </section>
+    `
+  }
+
   private section(id: string, title: string, settings: readonly string[]) {
-    if (id === SNAPSHOT_SECTION) {
-      return html`
-        <section id=${id} class="card mb-3" aria-labelledby=${`${id}-title`}>
-          <h2 id=${`${id}-title`} class="card-header h6 mb-0">${title}</h2>
-          <dst-snapshots
-            .selected=${this.selected}
-            .units=${this.units}
-            .disabled=${!this.present}
-          ></dst-snapshots>
-        </section>
-      `
-    }
     const infos = (this.infos ?? []).filter(
       (info) => settings.includes(info.id) && info.available !== 'no'
     )
     const pgns =
       id === PGN_SECTION &&
-      (this.pgns !== null || this.pgnsError !== null || this.restoring || this.restored !== null)
+      (this.pgns !== null ||
+        this.pgnsError !== null ||
+        this.pgnRestore().restoring ||
+        this.pgnRestore().restored !== null)
     if (infos.length === 0 && !pgns) {
       return nothing
     }
@@ -434,9 +464,9 @@ export class SettingsPanel extends LightElement {
                   .listError=${this.pgnsError}
                   .override=${typeof override === 'boolean' ? override : null}
                   .disabled=${!this.present}
-                  .restoring=${this.restoring}
-                  .restored=${this.restored}
-                  @restore=${(event: RestoreRequest) => this.restore(event)}
+                  .restoring=${this.pgnRestore().restoring}
+                  .restored=${this.pgnRestore().restored}
+                  @restart=${(event: RestartRequest) => this.restart(event)}
                 ></dst-pgns>`
               : nothing
           }
@@ -491,7 +521,11 @@ export class SettingsPanel extends LightElement {
     }
     return html`
       ${this.readLine()}
-      ${SECTIONS.map((section) => this.section(section.id, section.title, section.settings))}
+      ${SECTIONS.map((section) =>
+        section.custom === undefined
+          ? this.section(section.id, section.title, section.settings)
+          : this.custom(section.id, section.title, section.custom)
+      )}
     `
   }
 }

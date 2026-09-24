@@ -4,6 +4,7 @@ import { observationWindowMs } from '../../settings/intervalLimits.js'
 import type { PgnInfo, PgnListResult, PgnWriteResult, ResetResult } from '../../types.js'
 import { describeFailure, request } from '../api.js'
 import { LightElement } from '../light-element.js'
+import { describeRestart } from '../restart.js'
 import {
   defaultOf,
   describePgnWrite,
@@ -26,26 +27,11 @@ interface PgnState {
 
 const EMPTY: PgnState = { interval: '', priority: '', busy: null, outcome: null }
 
-export type Restore = 'updateRates' | 'priorities'
-
-/** Sent when the user confirms restoring `option`; the panel owns the request. */
-export type RestoreRequest = CustomEvent<{ option: Restore }>
+type Restore = 'updateRates' | 'priorities'
 
 const RESTORES: Record<Restore, { label: string; what: string }> = {
   updateRates: { label: 'Restore default intervals…', what: 'every message’s default interval' },
   priorities: { label: 'Restore default priorities…', what: 'every message’s default priority' }
-}
-
-/** A restore that went through restarts the sensor; say so in words. */
-function describeRestore(result: ResetResult): { tone: string; text: string } {
-  switch (result.status) {
-    case 'claimed':
-      return { tone: 'success', text: '✓ Restored. The sensor restarted.' }
-    case 'lost':
-      return { tone: 'warning', text: `Sent, but the sensor didn’t come back: ${result.reason}.` }
-    case 'notSent':
-      return { tone: 'danger', text: `Not sent: ${result.reason}.` }
-  }
 }
 
 /**
@@ -55,7 +41,7 @@ function describeRestore(result: ResetResult): { tone: string; text: string } {
  * row says what the last write did. A PGN sent only on request has no row.
  *
  * A restore restarts the sensor, and the panel replaces this element while
- * the sensor is away, so the panel sends it (`restore`) and passes back
+ * the sensor is away, so the panel sends it (`restart`) and passes back
  * `restoring` and `restored`.
  */
 @customElement('dst-pgns')
@@ -103,7 +89,7 @@ export class PgnTable extends LightElement {
 
   private restore(option: Restore): void {
     this.confirming = null
-    this.dispatchEvent(new CustomEvent('restore', { detail: { option }, bubbles: true }))
+    this.dispatchEvent(new CustomEvent('restart', { detail: { action: option }, bubbles: true }))
   }
 
   private row(info: PgnInfo) {
@@ -231,7 +217,8 @@ export class PgnTable extends LightElement {
     if (this.restored === null) {
       return nothing
     }
-    const { tone, text } = describeRestore(this.restored)
+    // Both restores say the same once done.
+    const { tone, text } = describeRestart({ action: 'updateRates', result: this.restored })
     return html`<span class="small text-${tone}-emphasis" role="status">${text}</span>`
   }
 

@@ -170,7 +170,18 @@ export const slotKey = ({ id, qualifier }: { id: string; qualifier: number | nul
   `${id}:${qualifier === null ? '' : String(qualifier)}`
 
 /** The console's sections, in page order. */
-export const SECTIONS: readonly { id: string; title: string; settings: readonly string[] }[] = [
+/**
+ * A section that holds its own controls rather than settings: `snapshots`
+ * exports and imports settings, `danger` restarts and restores the sensor.
+ */
+export type CustomSection = 'snapshots' | 'danger'
+
+export const SECTIONS: readonly {
+  id: string
+  title: string
+  settings: readonly string[]
+  custom?: CustomSection
+}[] = [
   { id: 'depth', title: 'Depth', settings: ['depthOffset', 'speedOfSound'] },
   { id: 'speed', title: 'Speed', settings: ['speedFilter'] },
   { id: 'calibration', title: 'Speed calibration', settings: ['speedCurve'] },
@@ -179,7 +190,8 @@ export const SECTIONS: readonly { id: string; title: string; settings: readonly 
   { id: 'network', title: 'NMEA 2000 output', settings: ['transmissionIntervalOverride'] },
   { id: 'installation', title: 'Installation', settings: ['installationDescription'] },
   { id: 'maintenance', title: 'Maintenance', settings: ['simulateMode'] },
-  { id: 'snapshots', title: 'Snapshots', settings: [] }
+  { id: 'snapshots', title: 'Snapshots', settings: [], custom: 'snapshots' },
+  { id: 'danger', title: 'Danger zone', settings: [], custom: 'danger' }
 ]
 
 /**
