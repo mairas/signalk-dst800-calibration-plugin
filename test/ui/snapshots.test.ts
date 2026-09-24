@@ -170,12 +170,12 @@ describe('snapshots', () => {
     sensor()
     const el = await open()
 
-    button(section(el), 'Save snapshot').click()
+    button(section(el), 'Export settings').click()
     await settle()
 
     expect(saved.map((s) => s.name)).toEqual(['dst-123456-2026-09-24.json'])
     expect(JSON.parse(await saved[0].blob.text())).toEqual(SNAPSHOT)
-    expect(text(section(el))).toContain('Saved dst-123456-2026-09-24.json with 3 settings.')
+    expect(text(section(el))).toContain('Exported dst-123456-2026-09-24.json with 3 settings.')
     expect(text(section(el))).toContain('Not in it: Calibration curve (No answer).')
   })
 
@@ -346,7 +346,7 @@ describe('snapshots', () => {
     await settle()
 
     expect(section(el).querySelector('[data-item]')).toBeNull()
-    expect(text(section(el))).not.toContain('Apply')
+    expect(section(el).querySelector('button.btn-primary')).toBeNull()
   })
 
   it('lists the points a curve of the same length would change', async () => {
@@ -453,7 +453,7 @@ describe('snapshots', () => {
     expect(section(el).querySelector('[data-item]')).toBeNull()
   })
 
-  it('disables saving and loading while the sensor is off the bus', async () => {
+  it('disables export and import while the sensor is off the bus', async () => {
     sensor()
     const el = await open()
 
@@ -463,9 +463,9 @@ describe('snapshots', () => {
     })
     await settle()
 
-    expect(button(section(el), 'Save snapshot').disabled).toBe(true)
+    expect(button(section(el), 'Export settings').disabled).toBe(true)
     expect(section(el).querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true)
-    expect(button(section(el), 'Load snapshot…').disabled).toBe(true)
+    expect(button(section(el), 'Import settings').disabled).toBe(true)
   })
 
   it('opens the file picker from a button a keyboard can reach', async () => {
@@ -473,7 +473,7 @@ describe('snapshots', () => {
     const el = await open()
     const picked = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined)
 
-    const load = button(section(el), 'Load snapshot…')
+    const load = button(section(el), 'Import settings')
     load.click()
 
     expect(load.tabIndex).toBe(0)
@@ -488,7 +488,7 @@ describe('snapshots', () => {
     await choose(el, JSON.stringify(SNAPSHOT))
 
     expect(text(section(el))).toContain('Comparing dst.json with the sensor')
-    expect(button(section(el), 'Load snapshot…').disabled).toBe(true)
-    expect(button(section(el), 'Save snapshot').disabled).toBe(true)
+    expect(button(section(el), 'Import settings').disabled).toBe(true)
+    expect(button(section(el), 'Export settings').disabled).toBe(true)
   })
 })

@@ -98,14 +98,14 @@ export class SnapshotPanel extends LightElement {
       const gaps = snapshot.unread.map((gap) => `${labelOf(gap.id, gap.qualifier)} (${gap.reason})`)
       this.saved = {
         tone: gaps.length === 0 ? 'success' : 'warning',
-        text: `Saved ${name} with ${plural(snapshot.settings.length, 'setting')}.`,
+        text: `Exported ${name} with ${plural(snapshot.settings.length, 'setting')}.`,
         detail: gaps.length === 0 ? null : `Not in it: ${gaps.join(', ')}.`
       }
     } catch (cause) {
       if (this.still(key)) {
         this.saved = {
           tone: 'danger',
-          text: `Not saved: ${clause(describeFailure(cause))}.`,
+          text: `Not exported: ${clause(describeFailure(cause))}.`,
           detail: null
         }
       }
@@ -327,8 +327,9 @@ export class SnapshotPanel extends LightElement {
     return html`
       <div class="card-body">
         <p class="form-text mt-0">
-          A snapshot is a file of every setting the sensor reports. Loading one shows what would
-          change before anything is written. Simulate mode and the distance log are never applied.
+          Export settings saves every setting the sensor reports to a file. Import settings compares
+          a file with the sensor and lists what would change; nothing is written until Apply.
+          Simulate mode and the distance log are never applied.
         </p>
         <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
           <button
@@ -344,7 +345,7 @@ export class SnapshotPanel extends LightElement {
                       aria-hidden="true"
                     ></span>
                     Reading every setting…`
-                : 'Save snapshot'
+                : 'Export settings'
             }
           </button>
           <button
@@ -355,7 +356,7 @@ export class SnapshotPanel extends LightElement {
               this.picker.click()
             }}
           >
-            Load snapshot…
+            Import settings
           </button>
           <input
             type="file"
