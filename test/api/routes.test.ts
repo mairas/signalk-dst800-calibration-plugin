@@ -856,6 +856,9 @@ describe('REST API', () => {
       await flush()
       return pending
     }
+    /** The deltas that carry the simulate notification. */
+    const notices = () =>
+      app.deltas.filter((d) => JSON.stringify(d).includes(SIMULATE_NOTIFICATION_PATH))
     const notified = (state: string) => ({
       updates: [{ values: [{ path: SIMULATE_NOTIFICATION_PATH, value: { state } }] }]
     })
@@ -871,15 +874,15 @@ describe('REST API', () => {
       simulating = true
       await readSimulate()
 
-      expect(app.deltas).toHaveLength(1)
-      expect(app.deltas[0]).toMatchObject(notified('warn'))
+      expect(notices()).toHaveLength(1)
+      expect(notices()[0]).toMatchObject(notified('warn'))
 
       simulating = false
       await readSimulate()
       await readSimulate()
 
-      expect(app.deltas).toHaveLength(2)
-      expect(app.deltas[1]).toMatchObject(notified('normal'))
+      expect(notices()).toHaveLength(2)
+      expect(notices()[1]).toMatchObject(notified('normal'))
     })
 
     it('keeps the warning while the sensor that raised it simulates, whatever another reports', async () => {
@@ -895,8 +898,8 @@ describe('REST API', () => {
       simulating = false
       await readSimulate()
 
-      expect(app.deltas).toHaveLength(1)
-      expect(app.deltas[0]).toMatchObject(notified('warn'))
+      expect(notices()).toHaveLength(1)
+      expect(notices()[0]).toMatchObject(notified('warn'))
     })
 
     it('re-reads simulate mode while a console is open, and only then', async () => {
@@ -913,8 +916,8 @@ describe('REST API', () => {
         operation: 'read',
         result: { status: 'answered', value: true }
       })
-      expect(app.deltas).toHaveLength(1)
-      expect(app.deltas[0]).toMatchObject(notified('warn'))
+      expect(notices()).toHaveLength(1)
+      expect(notices()[0]).toMatchObject(notified('warn'))
 
       leave()
       const before = sent.length

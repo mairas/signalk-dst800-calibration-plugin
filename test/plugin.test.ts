@@ -6,6 +6,10 @@ import {
   createRecordingRouter,
   createJsonResponse
 } from './helpers/MockServerAPI.js'
+import { decode } from './helpers/canboat.js'
+import { sourcesTree } from './helpers/sources.js'
+import { PGN } from '../src/protocol/pids.js'
+import type { DecodedPgn } from '../src/protocol/messages.js'
 
 describe('plugin lifecycle', () => {
   it('exposes the Signal K plugin interface', () => {
@@ -140,5 +144,66 @@ describe('GET /api/health', () => {
       const { body } = health(app, true)
       expect(body.selectedDevice).toBeNull()
     }
+  })
+})
+
+describe('telemetry', () => {
+  const DST = { address: 22, uniqueNumber: 123456, manufacturerCode: 'Airmar', modelId: 'DST800' }
+  const pulses: DecodedPgn = {
+    ...decode({
+      pgn: PGN.speedPulseCount,
+      dst: 255,
+      prio: 7,
+      fields: {
+        manufacturerCode: 'Airmar',
+        industryCode: 'Marine Industry',
+        sid: 1,
+        durationOfInterval: 2,
+        numberOfPulsesReceived: 40
+      }
+    }),
+    src: DST.address,
+    dst: 255
+  }
+
+  const started = () => {
+    const app = createMockServerAPI({
+      selectedDevice: { manufacturerCode: 135, uniqueNumber: DST.uniqueNumber }
+    })
+    app.sources = sourcesTree([DST])
+    const p = plugin(app.asServerAPI())
+    p.start({}, () => undefined)
+    return { app, p }
+  }
+
+  /** The entries of the last delta's first update, under `key`. */
+  const last = (app: ReturnType<typeof createMockServerAPI>, key: 'meta' | 'values') =>
+    (app.deltas.at(-1) as { updates: Record<string, { path: string; value: unknown }[]>[] })
+      .updates[0][key]
+
+  it('describes the unit of each path once, on start', () => {
+    const { app, p } = started()
+
+    expect(app.deltas).toHaveLength(1)
+    expect(
+      last(app, 'meta').find((m) => m.path === 'sensors.airmarDst.speed.pulseRate')?.value
+    ).toMatchObject({ units: 'Hz' })
+    void p.stop()
+  })
+
+  it('publishes the selected sensor’s pulse rate as it arrives, and nothing once stopped', () => {
+    const { app, p } = started()
+    app.events.emit('N2KAnalyzerOut', pulses)
+
+    expect(last(app, 'values')).toContainEqual({
+      path: 'sensors.airmarDst.speed.pulseRate',
+      value: 20
+    })
+
+    const count = app.deltas.length
+    void p.stop()
+    app.events.emit('N2KAnalyzerOut', pulses)
+
+    expect(app.deltas).toHaveLength(count)
   })
 })
