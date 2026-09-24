@@ -1,12 +1,18 @@
 import { html, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
+import type { DeviceKey } from '../../types.js'
+import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
-import { describeRestart, type RestartAction, type Restarted } from '../restart.js'
+import {
+  describeRestart,
+  isDeviceRestart,
+  type DeviceRestart,
+  type RestartAction,
+  type Restarted
+} from '../restart.js'
 
 /** What the user types before a factory restore, so it is never one click away. */
 const CONFIRMATION = 'RESTORE'
-
-type Asking = 'reset' | 'all'
 
 /**
  * The actions that cannot be undone from the console: a master reset, which
@@ -14,18 +20,32 @@ type Asking = 'reset' | 'all'
  * has stored. Each asks first; the factory restore wants a typed word.
  *
  * Fires `restart`; the settings panel sends it and passes back `restarting`
- * and `restarted`, because the restart replaces this element.
+ * and `restarted`, because the restart replaces this element. A confirmation
+ * belongs to the sensor it was opened for, so selecting another closes it.
  */
 @customElement('dst-danger-zone')
 export class DangerZone extends LightElement {
+  @property({ attribute: false }) selected: DeviceKey | null = null
   @property({ type: Boolean }) disabled = false
   @property({ attribute: false }) restarting: RestartAction | null = null
   @property({ attribute: false }) restarted: Restarted | null = null
 
-  @state() private asking: Asking | null = null
+  @state() private asking: DeviceRestart | null = null
   @state() private typed = ''
 
-  private go(action: Asking): void {
+  protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
+    const previous = changed.get('selected') as DeviceKey | null | undefined
+    if (previous !== undefined && !sameKey(previous, this.selected)) {
+      this.cancel()
+    }
+  }
+
+  /** Any restart in flight, from this section or the PGN table, blocks another. */
+  private get blocked(): boolean {
+    return this.disabled || this.restarting !== null
+  }
+
+  private go(action: DeviceRestart): void {
     this.asking = null
     this.typed = ''
     this.dispatchEvent(new CustomEvent('restart', { detail: { action }, bubbles: true }))
@@ -36,19 +56,15 @@ export class DangerZone extends LightElement {
     this.typed = ''
   }
 
-  private mine(action: RestartAction | undefined): boolean {
-    return action === 'reset' || action === 'all'
-  }
-
   private status() {
-    if (this.mine(this.restarting ?? undefined)) {
+    if (isDeviceRestart(this.restarting ?? undefined)) {
       return html`<p class="small text-body-secondary mb-0 mt-2" role="status">
         <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
         The sensor is restarting…
       </p>`
     }
     const restarted = this.restarted
-    if (restarted === null || !this.mine(restarted.action)) {
+    if (restarted === null || !isDeviceRestart(restarted.action)) {
       return nothing
     }
     const { tone, text } = describeRestart(restarted)
@@ -64,7 +80,7 @@ export class DangerZone extends LightElement {
       <button
         type="button"
         class="btn btn-sm btn-warning me-2"
-        ?disabled=${this.disabled}
+        ?disabled=${this.blocked}
         @click=${() => {
           this.go('reset')
         }}
@@ -108,7 +124,7 @@ export class DangerZone extends LightElement {
         <button
           type="button"
           class="btn btn-sm btn-danger"
-          ?disabled=${this.disabled || this.typed !== CONFIRMATION}
+          ?disabled=${this.blocked || this.typed !== CONFIRMATION}
           @click=${() => {
             this.go('all')
           }}
@@ -129,7 +145,6 @@ export class DangerZone extends LightElement {
   }
 
   override render() {
-    const busy = this.restarting !== null
     return html`
       <div class="list-group list-group-flush">
         <div class="list-group-item">
@@ -143,7 +158,7 @@ export class DangerZone extends LightElement {
               : html`<button
                   type="button"
                   class="btn btn-sm btn-outline-secondary"
-                  ?disabled=${this.disabled || busy}
+                  ?disabled=${this.blocked}
                   @click=${() => {
                     this.asking = 'reset'
                   }}
@@ -163,7 +178,7 @@ export class DangerZone extends LightElement {
               : html`<button
                   type="button"
                   class="btn btn-sm btn-outline-danger"
-                  ?disabled=${this.disabled || busy}
+                  ?disabled=${this.blocked}
                   @click=${() => {
                     this.asking = 'all'
                   }}

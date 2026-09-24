@@ -15,7 +15,15 @@ import { ApiError, describeFailure, request } from '../api.js'
 import { sameCurve } from '../curve.js'
 import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
-import { routeOf, type RestartAction, type RestartRequest, type Restarted } from '../restart.js'
+import {
+  describeRestart,
+  isPgnRestore,
+  routeOf,
+  type RestartAction,
+  type RestartRequest,
+  type RestartResult,
+  type Restarted
+} from '../restart.js'
 import {
   SECTIONS,
   type CustomSection,
@@ -40,6 +48,9 @@ const TICK_MS = 5000
 
 /** Read with the rest, shown in the header rather than as a row. */
 const PRODUCT = 'productInformation'
+
+/** The first status that says the server failed rather than refused. */
+const SERVER_ERROR = 500
 
 /** The section that holds the transmitted PGNs, below its settings. */
 const PGN_SECTION = 'network'
@@ -91,6 +102,8 @@ export class SettingsPanel extends LightElement {
    */
   @state() private restarting: RestartAction | null = null
   @state() private restarted: Restarted | null = null
+  /** The restart request in flight; a selection change forgets it. */
+  private restartToken: object | null = null
 
   private ticker: ReturnType<typeof setInterval> | null = null
   private probeSeen: string | null = null
@@ -132,6 +145,8 @@ export class SettingsPanel extends LightElement {
       this.probeSeen = null
       this.pgns = null
       this.pgnsError = null
+      this.restarting = null
+      this.restartToken = null
       this.restarted = null
     }
   }
@@ -232,33 +247,48 @@ export class SettingsPanel extends LightElement {
     this.pgnsError = failure
   }
 
+  /** One restart at a time: a second would reach a sensor that is already rebooting. */
   private async restart(event: RestartRequest): Promise<void> {
-    const key = this.selected
+    if (this.restarting !== null) {
+      return
+    }
     const { action } = event.detail
     const { path, body } = routeOf(action)
+    const token = {}
+    this.restartToken = token
     this.restarting = action
     this.restarted = null
-    let result: ResetResult
+    let result: RestartResult
     try {
       result = await request<ResetResult>('POST', path, body)
     } catch (cause) {
-      result = { status: 'notSent', reason: describeFailure(cause) }
+      // The plugin refuses before sending with a 4xx. Anything else, a lost
+      // connection included, may come after the frame went out.
+      const refused = cause instanceof ApiError && cause.status < SERVER_ERROR
+      result = refused
+        ? { status: 'notSent', reason: describeFailure(cause) }
+        : { status: 'unanswered', reason: describeFailure(cause) }
     }
-    this.restarting = null
-    if (sameKey(this.selected, key)) {
+    if (this.restartToken === token) {
+      this.restartToken = null
+      this.restarting = null
       this.restarted = { action, result }
     }
   }
 
-  /** The PGN table's restores, of the restart actions in flight or done. */
-  private pgnRestore(): { restoring: boolean; restored: ResetResult | null } {
-    const ours = (action: RestartAction | undefined) =>
-      action === 'updateRates' || action === 'priorities'
-    const restarted = this.restarted
-    return {
-      restoring: ours(this.restarting ?? undefined),
-      restored: restarted !== null && ours(restarted.action) ? restarted.result : null
+  /** The restart in flight or its outcome, for while the sections are gone with the probe. */
+  private restartLine() {
+    if (this.restarting !== null) {
+      return html`<p class="text-body-secondary" role="status">
+        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        The sensor is restarting…
+      </p>`
     }
+    if (this.restarted === null) {
+      return nothing
+    }
+    const { tone, text } = describeRestart(this.restarted)
+    return html`<p class=${`text-${tone}-emphasis`} role="status">${text}</p>`
   }
 
   private change(slot: Slot, edit: (row: RowState) => RowState): void {
@@ -428,6 +458,7 @@ export class SettingsPanel extends LightElement {
                 .disabled=${!this.present}
               ></dst-snapshots>`
             : html`<dst-danger-zone
+                .selected=${this.selected}
                 .disabled=${!this.present}
                 .restarting=${this.restarting}
                 .restarted=${this.restarted}
@@ -446,8 +477,8 @@ export class SettingsPanel extends LightElement {
       id === PGN_SECTION &&
       (this.pgns !== null ||
         this.pgnsError !== null ||
-        this.pgnRestore().restoring ||
-        this.pgnRestore().restored !== null)
+        isPgnRestore(this.restarting ?? undefined) ||
+        isPgnRestore(this.restarted?.action))
     if (infos.length === 0 && !pgns) {
       return nothing
     }
@@ -464,8 +495,8 @@ export class SettingsPanel extends LightElement {
                   .listError=${this.pgnsError}
                   .override=${typeof override === 'boolean' ? override : null}
                   .disabled=${!this.present}
-                  .restoring=${this.pgnRestore().restoring}
-                  .restored=${this.pgnRestore().restored}
+                  .restarting=${this.restarting}
+                  .restarted=${this.restarted}
                   @restart=${(event: RestartRequest) => this.restart(event)}
                 ></dst-pgns>`
               : nothing
@@ -508,10 +539,14 @@ export class SettingsPanel extends LightElement {
       return nothing
     }
     if ((this.device?.probe ?? null) === null) {
-      return html`<p class="text-body-secondary">
-        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
-        Checking what the sensor supports…
-      </p>`
+      // A restart drops the probe, and with it every section; its outcome stays here.
+      return html`
+        ${this.restartLine()}
+        <p class="text-body-secondary">
+          <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+          Checking what the sensor supports…
+        </p>
+      `
     }
     if (this.loadError !== null) {
       return html`<div class="alert alert-danger">Cannot list the settings: ${this.loadError}</div>`

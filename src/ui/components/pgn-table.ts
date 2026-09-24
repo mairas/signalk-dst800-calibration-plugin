@@ -1,10 +1,16 @@
 import { html, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import { observationWindowMs } from '../../settings/intervalLimits.js'
-import type { PgnInfo, PgnListResult, PgnWriteResult, ResetResult } from '../../types.js'
+import type { PgnInfo, PgnListResult, PgnWriteResult } from '../../types.js'
 import { describeFailure, request } from '../api.js'
 import { LightElement } from '../light-element.js'
-import { describeRestart } from '../restart.js'
+import {
+  describeRestart,
+  isPgnRestore,
+  type PgnRestore,
+  type RestartAction,
+  type Restarted
+} from '../restart.js'
 import {
   defaultOf,
   describePgnWrite,
@@ -27,9 +33,7 @@ interface PgnState {
 
 const EMPTY: PgnState = { interval: '', priority: '', busy: null, outcome: null }
 
-type Restore = 'updateRates' | 'priorities'
-
-const RESTORES: Record<Restore, { label: string; what: string }> = {
+const RESTORES: Record<PgnRestore, { label: string; what: string }> = {
   updateRates: { label: 'Restore default intervals…', what: 'every message’s default interval' },
   priorities: { label: 'Restore default priorities…', what: 'every message’s default priority' }
 }
@@ -42,7 +46,7 @@ const RESTORES: Record<Restore, { label: string; what: string }> = {
  *
  * A restore restarts the sensor, and the panel replaces this element while
  * the sensor is away, so the panel sends it (`restart`) and passes back
- * `restoring` and `restored`.
+ * `restarting` and `restarted`, the same as it passes the Danger zone.
  */
 @customElement('dst-pgns')
 export class PgnTable extends LightElement {
@@ -51,14 +55,14 @@ export class PgnTable extends LightElement {
   /** The per-message interval setting: false while the sensor ignores the intervals set here. */
   @property({ attribute: false }) override: boolean | null = null
   @property({ type: Boolean }) disabled = false
-  @property({ type: Boolean }) restoring = false
-  @property({ attribute: false }) restored: ResetResult | null = null
+  @property({ attribute: false }) restarting: RestartAction | null = null
+  @property({ attribute: false }) restarted: Restarted | null = null
 
   @state() private pgns = new Map<number, PgnState>()
-  @state() private confirming: Restore | null = null
+  @state() private confirming: PgnRestore | null = null
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
-    if (changed.has('restored') && this.restored?.status === 'claimed') {
+    if (changed.has('restarted') && this.restored?.result.status === 'claimed') {
       // Whatever was set here before, the sensor now holds its defaults.
       this.pgns = new Map()
     }
@@ -87,7 +91,17 @@ export class PgnTable extends LightElement {
     this.change(pgn, { busy: null, outcome: describePgnWrite(result, what) })
   }
 
-  private restore(option: Restore): void {
+  /** One of this table's restores is in flight. */
+  private get restoring(): boolean {
+    return isPgnRestore(this.restarting ?? undefined)
+  }
+
+  /** How this table's last restore went, if the last restart was one of them. */
+  private get restored(): Restarted | null {
+    return this.restarted !== null && isPgnRestore(this.restarted.action) ? this.restarted : null
+  }
+
+  private restore(option: PgnRestore): void {
     this.confirming = null
     this.dispatchEvent(new CustomEvent('restart', { detail: { action: option }, bubbles: true }))
   }
@@ -217,8 +231,7 @@ export class PgnTable extends LightElement {
     if (this.restored === null) {
       return nothing
     }
-    // Both restores say the same once done.
-    const { tone, text } = describeRestart({ action: 'updateRates', result: this.restored })
+    const { tone, text } = describeRestart(this.restored)
     return html`<span class="small text-${tone}-emphasis" role="status">${text}</span>`
   }
 
@@ -233,7 +246,7 @@ export class PgnTable extends LightElement {
         <button
           type="button"
           class="btn btn-sm btn-warning me-2"
-          ?disabled=${this.disabled}
+          ?disabled=${this.disabled || this.restarting !== null}
           @click=${() => {
             this.restore(confirming)
           }}
@@ -252,12 +265,12 @@ export class PgnTable extends LightElement {
       </div>`
     }
     return html`<div class="d-flex flex-wrap align-items-center gap-2">
-      ${(Object.keys(RESTORES) as Restore[]).map(
+      ${(Object.keys(RESTORES) as PgnRestore[]).map(
         (option) =>
           html`<button
             type="button"
             class="btn btn-sm btn-outline-secondary"
-            ?disabled=${this.disabled || this.restoring}
+            ?disabled=${this.disabled || this.restarting !== null}
             @click=${() => {
               this.confirming = option
             }}

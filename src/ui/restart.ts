@@ -7,15 +7,33 @@
 import type { ResetResult } from '../types.js'
 import { clause } from './format.js'
 
-export type RestartAction = 'reset' | 'all' | 'updateRates' | 'priorities'
+/** The Danger zone's actions. */
+export type DeviceRestart = 'reset' | 'all'
+
+/** The PGN table's actions. */
+export type PgnRestore = 'updateRates' | 'priorities'
+
+export type RestartAction = DeviceRestart | PgnRestore
+
+export const isDeviceRestart = (action: RestartAction | undefined): action is DeviceRestart =>
+  action === 'reset' || action === 'all'
+
+export const isPgnRestore = (action: RestartAction | undefined): action is PgnRestore =>
+  action === 'updateRates' || action === 'priorities'
 
 /** Sent when the user confirms `action`; the settings panel owns the request. */
 export type RestartRequest = CustomEvent<{ action: RestartAction }>
 
+/**
+ * How a restart went: the plugin's answer, or `unanswered` when the request
+ * failed after the frame may have gone out, so nothing says whether it did.
+ */
+export type RestartResult = ResetResult | { status: 'unanswered'; reason: string }
+
 /** An action and how it went, kept by the settings panel across the restart. */
 export interface Restarted {
   action: RestartAction
-  result: ResetResult
+  result: RestartResult
 }
 
 /** The plugin route and body for `action`. */
@@ -41,6 +59,11 @@ export function describeRestart({ action, result }: Restarted): { tone: string; 
       return {
         tone: 'warning',
         text: `Sent, but the sensor didn’t come back: ${clause(result.reason)}.`
+      }
+    case 'unanswered':
+      return {
+        tone: 'warning',
+        text: `The console lost the answer: ${clause(result.reason)}. The sensor may have restarted; its settings are read again once it is back.`
       }
     case 'notSent':
       return { tone: 'danger', text: `Not sent: ${clause(result.reason)}.` }

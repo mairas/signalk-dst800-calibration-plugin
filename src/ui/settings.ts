@@ -169,13 +169,13 @@ export function showValue(units: Units, id: string, value: unknown): string {
 export const slotKey = ({ id, qualifier }: { id: string; qualifier: number | null }): string =>
   `${id}:${qualifier === null ? '' : String(qualifier)}`
 
-/** The console's sections, in page order. */
 /**
  * A section that holds its own controls rather than settings: `snapshots`
  * exports and imports settings, `danger` restarts and restores the sensor.
  */
 export type CustomSection = 'snapshots' | 'danger'
 
+/** The console's sections, in page order. */
 export const SECTIONS: readonly {
   id: string
   title: string
