@@ -10,6 +10,7 @@ import type {
   WriteResult
 } from '../../types.js'
 import { ApiError, describeFailure, request } from '../api.js'
+import { sameCurve } from '../curve.js'
 import { sameKey } from '../format.js'
 import { LightElement } from '../light-element.js'
 import {
@@ -239,15 +240,21 @@ export class SettingsPanel extends LightElement {
     const readBack = await this.read(slot)
     const stored = storedValueOf(readBack)
     const unit = this.unitOf(slot.id)
-    const same =
-      stored !== null &&
-      (typeof value === 'number' && typeof stored.value === 'number' && unit !== null
-        ? unit.format(value) === unit.format(stored.value)
-        : JSON.stringify(value) === JSON.stringify(stored.value))
+    const same = stored !== null && this.sameAsShown(slot.id, value, stored.value, unit)
     this.change(slot, (row) => ({
       ...row,
       outcome: same ? { kind: 'holdsRequested' } : { kind: 'noAnswer', operation: 'write' }
     }))
+  }
+
+  /** Whether two values read the same to the user, which is as close as the sensor stores them. */
+  private sameAsShown(id: string, a: unknown, b: unknown, unit: DisplayUnit | null): boolean {
+    if (unit !== null && VIEWS[id]?.editor.kind === 'curve') {
+      return sameCurve(a, b, unit)
+    }
+    return typeof a === 'number' && typeof b === 'number' && unit !== null
+      ? unit.format(a) === unit.format(b)
+      : JSON.stringify(a) === JSON.stringify(b)
   }
 
   /** A read or write that reached the sensor, from this console or another. */

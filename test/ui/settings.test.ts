@@ -149,6 +149,7 @@ describe('settings', () => {
       await settle()
 
       expect(reads).toEqual([
+        'speedCurve',
         'temperatureOffset?qualifier=0',
         'temperatureOffset?qualifier=1',
         'temperatureOffset?qualifier=2',

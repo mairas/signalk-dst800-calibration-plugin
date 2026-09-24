@@ -1,0 +1,315 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type { ReadResult, SettingInfo, WriteResult } from '../../src/types.js'
+import '../../src/ui/main.js'
+import { FakeEventSource, button, json, mount, selected, serve, settle, text } from './helpers.js'
+
+const READ_AT = '2026-09-24T12:00:00.000Z'
+
+const CURVE_INFO: SettingInfo = {
+  id: 'speedCurve',
+  requirement: 'R9',
+  readable: true,
+  writable: true,
+  requiresLevel1: true,
+  qualifiers: null,
+  available: 'yes'
+}
+
+const HELD = [
+  { hz: 0, speed: 0 },
+  { hz: 5, speed: 1.03 },
+  { hz: 10, speed: 2.06 }
+]
+
+/** The server's own nautical preset: speeds in knots. */
+const KNOTS = {
+  '/signalk/v1/applicationData/user/unitpreferences/1.0.0': { activePreset: 'nautical-metric' },
+  '/signalk/v1/unitpreferences/presets/nautical-metric': {
+    categories: { speed: { baseUnit: 'm/s', targetUnit: 'kn', displayFormat: '0.0' } }
+  },
+  '/signalk/v1/unitpreferences/definitions': {
+    'm/s': {
+      conversions: {
+        kn: { formula: 'value * 1.94384', inverseFormula: 'value * 0.514444', symbol: 'kn' }
+      }
+    }
+  }
+}
+
+const answered = (value: unknown): ReadResult => ({ status: 'answered', value, readAt: READ_AT })
+
+/** Serve a sensor holding `held`; writes go to `onWrite`, with each body recorded in `bodies`. */
+function curveDevice(
+  options: {
+    held?: unknown
+    onWrite?: (value: unknown) => WriteResult
+    bodies?: unknown[]
+    reads?: string[]
+  } = {}
+) {
+  let held: unknown = options.held ?? HELD
+  serve(
+    selected(),
+    (path, init) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === '/settings/speedCurve') {
+        options.reads?.push(path)
+        return json(answered(held))
+      }
+      if (init?.method === 'PUT' && path === '/settings/speedCurve') {
+        const body = JSON.parse(init.body as string) as { value: unknown }
+        options.bodies?.push(body.value)
+        const result = options.onWrite?.(body.value) ?? {
+          status: 'applied',
+          stored: body.value,
+          readAt: READ_AT
+        }
+        if (result.status === 'applied') {
+          held = result.stored
+        }
+        return json(result)
+      }
+      throw new Error(`Unexpected ${init?.method ?? 'GET'} ${path}`)
+    },
+    [CURVE_INFO],
+    KNOTS
+  )
+}
+
+const curve = (el: Element): Element => {
+  const found = el.querySelector('[data-slot="speedCurve:"]')
+  if (found === null) {
+    throw new Error('No speed curve')
+  }
+  return found
+}
+
+/** The table's inputs: frequency and speed per point. */
+const cells = (el: Element): HTMLInputElement[][] =>
+  [...curve(el).querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('input')])
+
+const values = (el: Element): string[][] => cells(el).map((row) => row.map((input) => input.value))
+
+const type = async (field: HTMLInputElement, value: string) => {
+  field.value = value
+  field.dispatchEvent(new Event('input'))
+  await settle()
+}
+
+const open = async () => {
+  const el = await mount()
+  await settle()
+  return el
+}
+
+describe('speed curve', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: Date.parse(READ_AT) })
+    FakeEventSource.instances = []
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.spyOn(globalThis, 'fetch')
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('reads the curve and shows each point, speed in the user’s unit, in the table and the plot', async () => {
+    curveDevice()
+    const el = await open()
+
+    expect(values(el)).toEqual([
+      ['0.0', '0.00'],
+      ['5.0', '2.00'],
+      ['10.0', '4.00']
+    ])
+    expect(text(curve(el))).toContain('kn')
+    expect(curve(el).querySelectorAll('svg .dst-curve-point')).toHaveLength(3)
+    expect(el.querySelector('#calibration')).not.toBeNull()
+  })
+
+  it('writes the edited curve in SI units', async () => {
+    const bodies: unknown[] = []
+    curveDevice({ bodies })
+    const el = await open()
+
+    await type(cells(el)[2][1], '5.00')
+    button(curve(el), 'Save').click()
+    await settle()
+
+    expect(bodies).toEqual([
+      [
+        { hz: 0, speed: 0 },
+        { hz: 5, speed: expect.closeTo(1.03, 2) as number },
+        { hz: 10, speed: expect.closeTo(2.572, 3) as number }
+      ]
+    ])
+    expect(text(curve(el))).toContain('Stored')
+    expect(values(el)[2]).toEqual(['10.0', '5.00'])
+  })
+
+  it('adds and removes points, and Cancel goes back to what the sensor holds', async () => {
+    curveDevice()
+    const el = await open()
+
+    button(curve(el), 'Add point').click()
+    await settle()
+    await type(cells(el)[3][0], '15')
+    await type(cells(el)[3][1], '6')
+    curve(el).querySelector<HTMLButtonElement>('[aria-label="Remove point 1"]')?.click()
+    await settle()
+
+    expect(values(el)).toEqual([
+      ['5.0', '2.00'],
+      ['10.0', '4.00'],
+      ['15', '6']
+    ])
+    expect(curve(el).querySelectorAll('svg .dst-curve-point')).toHaveLength(3)
+
+    button(curve(el), 'Cancel').click()
+    await settle()
+
+    expect(values(el)).toEqual([
+      ['0.0', '0.00'],
+      ['5.0', '2.00'],
+      ['10.0', '4.00']
+    ])
+  })
+
+  it('writes a curve with its last point removed', async () => {
+    const bodies: unknown[] = []
+    curveDevice({ bodies })
+    const el = await open()
+
+    curve(el).querySelector<HTMLButtonElement>('[aria-label="Remove point 3"]')?.click()
+    await settle()
+    button(curve(el), 'Save').click()
+    await settle()
+
+    expect(bodies).toEqual([
+      [
+        { hz: 0, speed: 0 },
+        { hz: 5, speed: expect.closeTo(1.03, 2) as number }
+      ]
+    ])
+  })
+
+  it.each([
+    ['falls below the point before it', '4', 'Point 3: frequency must be above point 2’s 5.0 Hz'],
+    ['stores as the same 0.1 Hz step', '5.04', 'Point 3: frequency must be above point 2’s 5.0 Hz'],
+    ['is not a number', 'fast', 'Point 3: enter a frequency'],
+    ['is out of range', '7000', 'Point 3: frequency must be between 0 and 6553.2 Hz']
+  ])(
+    'refuses in the browser a frequency that %s, naming the point',
+    async (_case, typed, words) => {
+      const bodies: unknown[] = []
+      curveDevice({ bodies })
+      const el = await open()
+
+      await type(cells(el)[2][0], typed)
+
+      expect(text(curve(el))).toContain(words)
+      expect(cells(el)[2][0].classList).toContain('is-invalid')
+      expect(button(curve(el), 'Save').disabled).toBe(true)
+      expect(bodies).toEqual([])
+    }
+  )
+
+  it('refuses a speed outside what the sensor stores, in the user’s unit', async () => {
+    curveDevice()
+    const el = await open()
+
+    await type(cells(el)[1][1], '-1')
+
+    expect(text(curve(el))).toContain('Point 2: speed must be between 0.00 and 1273.84 kn')
+    expect(cells(el)[1][1].classList).toContain('is-invalid')
+  })
+
+  it('stops at 25 points', async () => {
+    const full = Array.from({ length: 25 }, (_, i) => ({ hz: i, speed: i / 10 }))
+    curveDevice({ held: full })
+    const el = await open()
+
+    expect(cells(el)).toHaveLength(25)
+    expect(button(curve(el), 'Add point').disabled).toBe(true)
+    expect(text(curve(el))).toContain('at most 25 points')
+  })
+
+  it('names the points the sensor refused and marks their fields', async () => {
+    curveDevice({
+      onWrite: (value) => ({
+        status: 'rejected',
+        reason: 'Parameter out of range',
+        refusedFields: [{ field: 'point 2 speed', error: 'Parameter out of range' }],
+        detail: {
+          acknowledgedPgn: 126720,
+          src: 22,
+          ok: false,
+          pgnError: 'Acknowledge',
+          intervalPriorityError: 'Acknowledge',
+          parameterErrors: [{ index: 5, error: 'Parameter out of range' }],
+          missingParameterCodes: 0
+        },
+        requested: value
+      })
+    })
+    const el = await open()
+
+    await type(cells(el)[1][1], '3')
+    button(curve(el), 'Save').click()
+    await settle()
+
+    expect(text(curve(el))).toContain('The sensor refused point 2 speed: out of its allowed range.')
+    expect(cells(el)[1][1].classList).toContain('is-invalid')
+    expect(values(el)[1]).toEqual(['5.0', '3'])
+  })
+
+  it('reads an unanswered write back, and finds the curve asked for at the stored resolution', async () => {
+    const reads: string[] = []
+    let held: unknown = HELD
+    serve(
+      selected(),
+      (path, init) => {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(init.body as string) as { value: { hz: number; speed: number }[] }
+          // The sensor quantises: 0.01 m/s.
+          held = body.value.map((p) => ({ hz: p.hz, speed: Math.round(p.speed * 100) / 100 }))
+          return json({ status: 'unknown', reason: 'No answer' } satisfies WriteResult)
+        }
+        reads.push(path)
+        return json(answered(held))
+      },
+      [CURVE_INFO],
+      KNOTS
+    )
+    const el = await open()
+
+    await type(cells(el)[2][1], '5.00')
+    button(curve(el), 'Save').click()
+    await settle()
+
+    expect(reads).toHaveLength(2)
+    expect(text(curve(el))).toContain('didn’t acknowledge the write, but it now holds')
+  })
+
+  it('disables editing while the sensor is off the bus', async () => {
+    curveDevice()
+    const el = await open()
+
+    FakeEventSource.latest.push({
+      type: 'device',
+      data: selected({ location: { state: 'waiting', address: 22 } })
+    })
+    await settle()
+
+    expect(values(el)[1]).toEqual(['5.0', '2.00'])
+    expect(
+      cells(el)
+        .flat()
+        .every((input) => input.disabled)
+    ).toBe(true)
+    expect(button(curve(el), 'Add point').disabled).toBe(true)
+  })
+})

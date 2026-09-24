@@ -1,8 +1,11 @@
 import { html, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
+import { checkCurve, curveOf, refusedAt, rowsOf, type CurveRow } from '../curve.js'
 import { LightElement } from '../light-element.js'
-import { describeOutcome, type Editor, type Outcome } from '../settings.js'
+import { describeOutcome, inWords, type Editor, type Outcome } from '../settings.js'
 import type { DisplayUnit } from '../units.js'
+import './curve-editor.js'
+import type { RowsChange } from './curve-editor.js'
 
 /** What the console knows about one setting of the selected sensor. */
 export interface RowState {
@@ -28,6 +31,13 @@ const descriptionLines = (value: unknown): [string, string] => {
   const line = (key: string) => (typeof record[key] === 'string' ? record[key] : '')
   return [line('description1'), line('description2')]
 }
+
+/** A curve's fields, two per point, back into its rows. */
+const pairs = (fields: readonly string[]): CurveRow[] =>
+  Array.from({ length: Math.floor(fields.length / 2) }, (_, i) => [
+    fields[2 * i],
+    fields[2 * i + 1]
+  ])
 
 /**
  * One setting: its label and help, and its value as an editable control.
@@ -105,6 +115,10 @@ export class SettingRow extends LightElement {
         return [typeof value === 'boolean' ? String(value) : '']
       case 'description':
         return descriptionLines(value)
+      case 'curve': {
+        const points = curveOf(value)
+        return points === null || this.unit === null ? [] : rowsOf(points, this.unit).flat()
+      }
       default:
         return []
     }
@@ -116,7 +130,10 @@ export class SettingRow extends LightElement {
 
   private get dirty(): boolean {
     const stored = this.storedFields()
-    return this.draft?.some((field, i) => field !== stored[i]) ?? false
+    return (
+      this.draft !== null &&
+      (this.draft.length !== stored.length || this.draft.some((field, i) => field !== stored[i]))
+    )
   }
 
   private get blocked(): boolean {
@@ -151,6 +168,8 @@ export class SettingRow extends LightElement {
         return fields[0] === 'true'
       case 'description':
         return { description1: fields[0], description2: fields[1] }
+      case 'curve':
+        return this.unit === null ? null : checkCurve(pairs(fields), this.unit).points
       default:
         return null
     }
@@ -182,6 +201,10 @@ export class SettingRow extends LightElement {
     }
     if (this.editor.kind === 'simulate') {
       return value === true ? 'on' : 'off'
+    }
+    if (this.editor.kind === 'curve') {
+      const points = curveOf(value)
+      return points === null ? JSON.stringify(value) : `a ${String(points.length)}-point curve`
     }
     if (this.editor.kind === 'description') {
       return `“${descriptionLines(value)
@@ -230,7 +253,11 @@ export class SettingRow extends LightElement {
                 >Sensor has ${this.show(this.row.stored.value)}</span
               >`
         }
-        ${writable ? nothing : html`<span class="small text-danger-emphasis">Enter a number.</span>`}
+        ${
+          writable || this.editor.kind === 'curve'
+            ? nothing
+            : html`<span class="small text-danger-emphasis">Enter a number.</span>`
+        }
       </div>
     `
   }
@@ -275,6 +302,43 @@ export class SettingRow extends LightElement {
         />
         <span class="input-group-text">${this.unit?.symbol ?? ''}</span>
       </div>
+      ${this.saveButtons()}
+    `
+  }
+
+  private curveControl() {
+    const rows = pairs(this.fields)
+    const problems = this.unit === null ? [] : checkCurve(rows, this.unit).problems
+    const outcome = this.row.outcome
+    const refused =
+      this.dirty && outcome?.kind === 'refused'
+        ? outcome.fields.map((f) => refusedAt(f.field)).filter((at) => at !== null)
+        : []
+    const invalid = new Set(
+      [...problems, ...refused]
+        .filter((p) => p.point !== null && p.field !== null)
+        .map((p) => `${String(p.point)}:${String(p.field)}`)
+    )
+    const stored = this.storedFields()
+    return html`
+      <dst-curve-editor
+        .rows=${rows}
+        .stored=${this.row.stored === null ? null : pairs(stored)}
+        .speedSymbol=${this.unit?.symbol ?? ''}
+        .invalid=${invalid}
+        ?disabled=${this.disabled}
+        ?readonly=${this.row.busy === 'write'}
+        @rows-change=${(event: RowsChange) => {
+          this.draft = event.detail.rows.flat()
+        }}
+      ></dst-curve-editor>
+      ${
+        problems.length === 0 || !this.dirty
+          ? nothing
+          : html`<ul class="small text-danger-emphasis mt-2 mb-0 ps-3">
+              ${problems.map((p) => html`<li>${p.text}</li>`)}
+            </ul>`
+      }
       ${this.saveButtons()}
     `
   }
@@ -556,6 +620,8 @@ export class SettingRow extends LightElement {
         return this.tripControl()
       case 'simulate':
         return this.simulateControl()
+      case 'curve':
+        return this.curveControl()
     }
   }
 
@@ -589,6 +655,12 @@ export class SettingRow extends LightElement {
     if (outcome.kind === 'stored' && this.storedNoticeGone) {
       return nothing
     }
+    if (this.editor.kind === 'curve' && outcome.kind === 'refused' && outcome.fields.length > 0) {
+      const text = outcome.fields.map((f) => `${f.field}: ${inWords([f.error])}`).join('; ')
+      return html`<div class="small mt-1 text-danger-emphasis" role="status">
+        The sensor refused ${text}.
+      </div>`
+    }
     const { tone, text } = describeOutcome(outcome, (value) => this.show(value), this.row.stored)
     const retry =
       outcome.kind === 'unconfirmed' ||
@@ -601,9 +673,10 @@ export class SettingRow extends LightElement {
   }
 
   override render() {
+    const wide = this.editor.kind === 'curve'
     return html`
       <div class="row g-2">
-        <div class="col-md-5">
+        <div class=${wide ? 'col-12' : 'col-md-5'}>
           <label class="fw-semibold" for=${this.inputId}>${this.label}</label>
           ${
             this.level1
@@ -616,7 +689,7 @@ export class SettingRow extends LightElement {
           }
           ${this.help === '' ? nothing : html`<div class="form-text mt-0">${this.help}</div>`}
         </div>
-        <div class="col-md-7">${this.control()} ${this.status()}</div>
+        <div class=${wide ? 'col-12' : 'col-md-7'}>${this.control()} ${this.status()}</div>
       </div>
     `
   }
