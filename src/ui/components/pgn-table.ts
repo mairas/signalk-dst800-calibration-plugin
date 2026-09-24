@@ -25,7 +25,7 @@ import {
 
 const PRIORITIES = [0, 1, 2, 3, 4, 5, 6, 7]
 
-/** What the console knows about one PGN: nothing is read from the sensor, only what was set. */
+/** What the user has changed for one PGN, and how its last write went; the measurement comes with the list. */
 interface PgnState {
   /** What the user typed or chose; null while the control shows what was measured. */
   interval: string | null
@@ -44,8 +44,9 @@ const RESTORES: Record<PgnRestore, { label: string; what: string }> = {
 /**
  * The PGNs the sensor transmits, each with an interval and a priority to set.
  *
- * The sensor does not report either, so the controls start empty and each
- * row says what the last write did. A PGN sent only on request has no row.
+ * Each control shows what the plugin measured on the bus until the user
+ * changes it, and each row says what its last write did. A PGN sent only on
+ * request has no row.
  *
  * A restore restarts the sensor, and the panel replaces this element while
  * the sensor is away, so the panel sends it (`restart`) and passes back
@@ -104,13 +105,8 @@ export class PgnTable extends LightElement {
       result = { status: 'invalid', reason: describeFailure(cause) }
     }
     const what = 'priority' in body ? { priority: body.priority } : { interval: true as const }
-    // The controls follow the measurement again, which the panel takes afresh.
-    this.change(pgn, {
-      busy: null,
-      outcome: describePgnWrite(result, what),
-      interval: null,
-      priority: null
-    })
+    // The written control follows the measurement again, which the panel takes afresh.
+    this.change(pgn, { busy: null, outcome: describePgnWrite(result, what), [kind]: null })
     this.dispatchEvent(new CustomEvent('remeasure', { bubbles: true }))
   }
 

@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { PgnListResult, PgnWriteResult, ReadResult, SettingInfo } from '../../src/types.js'
+import type {
+  PgnListResult,
+  PgnMeasuredResponse,
+  PgnMeasurement,
+  PgnWriteResult,
+  ReadResult,
+  SettingInfo
+} from '../../src/types.js'
 import '../../src/ui/main.js'
 import {
   FakeEventSource,
@@ -193,7 +200,7 @@ describe('PGN intervals and priorities', () => {
     expect(text(pgnRow(el, 65409))).toContain('Measured: not sent periodically')
   })
 
-  it('offers Set only once a value differs from the measured one', async () => {
+  it('offers Set only once a value is edited', async () => {
     sensor()
     const el = await open()
     const row = pgnRow(el, 128267)
@@ -212,26 +219,20 @@ describe('PGN intervals and priorities', () => {
     expect(button(row, 'Set').disabled).toBe(false)
   })
 
-  it('measures again after a write, and the row follows the new measurement', async () => {
-    let lists = 0
+  /** A sensor whose depth measurement is `depth()` at each request, answering every write. */
+  const measuring = (depth: () => Partial<PgnMeasurement>, sent: Sent[] = []) => {
     serve(
       selected(),
       (path, init) => {
         const method = init?.method ?? 'GET'
+        sent.push({ method, path, body: init?.body })
         if (method === 'GET' && path === '/pgns') {
-          lists += 1
+          return json(LIST)
+        }
+        if (method === 'GET' && path === '/pgns/measured') {
           return json({
-            status: 'answered',
-            pgns: [
-              {
-                pgn: 128267,
-                minIntervalMs: 50,
-                telemetry: false,
-                observedIntervalMs: lists === 1 ? 1000 : 500,
-                observedPriority: 3
-              }
-            ]
-          } satisfies PgnListResult)
+            pgns: [{ pgn: 128267, observedIntervalMs: 1000, observedPriority: 3, ...depth() }]
+          } satisfies PgnMeasuredResponse)
         }
         if (method === 'PUT') {
           return json({ status: 'applied', observedIntervalMs: 500 } satisfies PgnWriteResult)
@@ -242,14 +243,83 @@ describe('PGN intervals and priorities', () => {
       {},
       null
     )
+  }
+
+  it('measures again after a write without asking the sensor for its list, and the row follows', async () => {
+    const sent: Sent[] = []
+    let written = false
+    measuring(() => (written ? { observedIntervalMs: 500 } : {}), sent)
     const el = await open()
+
+    // No tick passes before the write, so only the write asks for the measurement.
+    written = true
+    await setInterval_(pgnRow(el, 128267), '0.5')
+    await settle()
+
+    expect(sent.filter((s) => s.path === '/pgns')).toHaveLength(1)
+    expect(sent.filter((s) => s.path === '/pgns/measured')).toHaveLength(1)
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('0.50')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 0.50 s')
+  })
+
+  it('follows the measurement as it changes, without a write', async () => {
+    let depth: Partial<PgnMeasurement> = {}
+    measuring(() => depth)
+    const el = await open()
+    // Selected moments ago: depth has not been heard twice yet.
+    expect(text(pgnRow(el, 130316))).toContain('Measured: every 2.00 s')
+
+    depth = { observedIntervalMs: 2500 }
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('2.50')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 2.50 s')
+    // Measured nothing for this one since the list came: not sent after all.
+    expect(text(pgnRow(el, 130316))).toContain('Measured: not sent periodically')
+  })
+
+  it('shows no priority after a priority write until a frame carries the new one', async () => {
+    let priority: number | null = 3
+    measuring(() => ({ observedPriority: priority }))
+    const el = await open()
+    const select = prioritySelect(pgnRow(el, 128267))
+    if (select === null) {
+      throw new Error('No priority select')
+    }
+
+    select.value = '2'
+    select.dispatchEvent(new Event('change'))
+    await settle()
+    priority = null
+    button(pgnRow(el, 128267), 'Set priority').click()
+    await settle()
+
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('')
+    expect(text(pgnRow(el, 128267))).toContain('✓ Priority 2 stored.')
+
+    priority = 2
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('2')
+    expect(text(pgnRow(el, 128267))).toContain('Measured: every 1.00 s, priority 2')
+  })
+
+  it('keeps a chosen priority when the same row’s interval is set', async () => {
+    measuring(() => ({}))
+    const el = await open()
+    const select = prioritySelect(pgnRow(el, 128267))
+    if (select === null) {
+      throw new Error('No priority select')
+    }
+    select.value = '5'
+    select.dispatchEvent(new Event('change'))
+    await settle()
 
     await setInterval_(pgnRow(el, 128267), '0.5')
     await settle()
 
-    expect(lists).toBe(2)
-    expect(intervalInput(pgnRow(el, 128267))?.value).toBe('0.50')
-    expect(text(pgnRow(el, 128267))).toContain('Measured: every 0.50 s')
+    expect(prioritySelect(pgnRow(el, 128267))?.value).toBe('5')
+    expect(button(pgnRow(el, 128267), 'Set priority').disabled).toBe(false)
   })
 
   it('lists messages sent only on request without controls', async () => {

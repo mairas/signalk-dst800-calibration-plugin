@@ -4,6 +4,7 @@ import type {
   DeviceResponse,
   DevicesResponse,
   PgnListResult,
+  PgnMeasuredResponse,
   ProbeResult,
   ServerEvent,
   SettingInfo,
@@ -100,7 +101,7 @@ export function serve(
   settings: SettingInfo[] = [],
   /** The server's own API by URL, such as its unit preferences; anything else is 404. */
   server: Record<string, unknown> = {},
-  /** What the sensor transmits; nothing by default, and null passes GET /pgns to `other`. */
+  /** What the sensor transmits, and its measurements; nothing by default, and null passes both to `other`. */
   pgns: PgnListResult | null = { status: 'answered', pgns: [] }
 ): void {
   vi.mocked(fetch).mockImplementation((input, init) => {
@@ -121,6 +122,17 @@ export function serve(
     }
     if (method === 'GET' && path === '/pgns' && pgns !== null) {
       return Promise.resolve(json(pgns))
+    }
+    if (method === 'GET' && path === '/pgns/measured' && pgns?.status === 'answered') {
+      return Promise.resolve(
+        json({
+          pgns: pgns.pgns.map(({ pgn, observedIntervalMs, observedPriority }) => ({
+            pgn,
+            observedIntervalMs,
+            observedPriority
+          }))
+        } satisfies PgnMeasuredResponse)
+      )
     }
     if (other !== undefined) {
       return Promise.resolve(other(path, init))
