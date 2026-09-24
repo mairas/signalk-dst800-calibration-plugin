@@ -8,7 +8,9 @@
 
 import { CURVE_SPEED_RESOLUTION } from '../protocol/pids.js'
 import type { ReadResult, WriteResult } from '../types.js'
-import type { UnitSpec } from './units.js'
+import { curveOf } from './curve.js'
+import { isRecord } from './format.js'
+import { unitFor, type DisplayUnit, type UnitSpec, type Units } from './units.js'
 
 export type Editor =
   | { kind: 'number' }
@@ -98,6 +100,75 @@ export const VIEWS: Partial<Record<string, SettingView>> = {
   }
 }
 
+/** The installation description's two lines. */
+export const descriptionLines = (value: unknown): [string, string] => {
+  const record = isRecord(value) ? value : {}
+  const line = (key: string) => (typeof record[key] === 'string' ? record[key] : '')
+  return [line('description1'), line('description2')]
+}
+
+/** A setting's value as the user reads it, in a sentence, in the user's units. */
+export function describeValue(editor: Editor, unit: DisplayUnit | null, value: unknown): string {
+  const inUnit = (si: unknown) =>
+    typeof si === 'number' && unit !== null ? `${unit.format(si)} ${unit.symbol}` : '—'
+  switch (editor.kind) {
+    case 'number':
+      return typeof value === 'number' ? inUnit(value) : JSON.stringify(value)
+    case 'choice':
+      return editor.options.find((o) => o.value === value)?.label ?? String(value)
+    case 'simulate':
+      return value === true ? 'on' : 'off'
+    case 'curve': {
+      const points = curveOf(value)
+      return points === null ? JSON.stringify(value) : `a ${String(points.length)}-point curve`
+    }
+    case 'description':
+      return `“${descriptionLines(value)
+        .filter((line) => line !== '')
+        .join(' / ')}”`
+    case 'tripReset': {
+      const log = isRecord(value) ? value : {}
+      // A trip reset asks only for the trip; the total is the sensor's own.
+      return log.log === undefined
+        ? `trip ${inUnit(log.tripLog)}`
+        : `trip ${inUnit(log.tripLog)}, total ${inUnit(log.log)}`
+    }
+    case 'filter':
+      return JSON.stringify(value)
+  }
+}
+
+/** Settings the console reads but shows no row for. */
+const OTHER_LABELS: Partial<Record<string, string>> = {
+  productInformation: 'Product information'
+}
+
+/** A setting's name as its row shows it, per temperature source for the offsets. */
+export function labelOf(id: string, qualifier: number | null): string {
+  if (qualifier !== null && id === 'temperatureOffset') {
+    return TEMPERATURE_SOURCES.find((s) => s.qualifier === qualifier)?.label ?? id
+  }
+  return VIEWS[id]?.label ?? OTHER_LABELS[id] ?? id
+}
+
+/** How a setting's values show under `units`, or null for one without a unit. */
+export function unitOf(units: Units, id: string): DisplayUnit | null {
+  const spec = VIEWS[id]?.unit
+  return spec === undefined ? null : unitFor(units, spec)
+}
+
+/** A setting's value as its row says it, or JSON for a setting the console shows no row for. */
+export function showValue(units: Units, id: string, value: unknown): string {
+  const view = VIEWS[id]
+  return view === undefined
+    ? JSON.stringify(value)
+    : describeValue(view.editor, unitOf(units, id), value)
+}
+
+/** One row per setting and qualifier. */
+export const slotKey = ({ id, qualifier }: { id: string; qualifier: number | null }): string =>
+  `${id}:${qualifier === null ? '' : String(qualifier)}`
+
 /** The console's sections, in page order. */
 export const SECTIONS: readonly { id: string; title: string; settings: readonly string[] }[] = [
   { id: 'depth', title: 'Depth', settings: ['depthOffset', 'speedOfSound'] },
@@ -107,7 +178,8 @@ export const SECTIONS: readonly { id: string; title: string; settings: readonly 
   { id: 'log', title: 'Distance log', settings: ['distanceLog'] },
   { id: 'network', title: 'NMEA 2000 output', settings: ['transmissionIntervalOverride'] },
   { id: 'installation', title: 'Installation', settings: ['installationDescription'] },
-  { id: 'maintenance', title: 'Maintenance', settings: ['simulateMode'] }
+  { id: 'maintenance', title: 'Maintenance', settings: ['simulateMode'] },
+  { id: 'snapshots', title: 'Snapshots', settings: [] }
 ]
 
 /**
