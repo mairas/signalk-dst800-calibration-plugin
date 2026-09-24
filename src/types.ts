@@ -1,10 +1,12 @@
 import type { Candidate, Location } from './devices/registry.js'
 import type { ProbeResult } from './devices/probe.js'
+import type { AccessView } from './session/accessLevel.js'
 import type { ReadResult, WriteResult } from './settings/operations.js'
 import type { Qualifier } from './settings/registry.js'
 
 export type { Candidate, Location } from './devices/registry.js'
 export type { ProbeResult } from './devices/probe.js'
+export type { AccessView } from './session/accessLevel.js'
 export type { ReadResult, WriteResult } from './settings/operations.js'
 export type { PgnInfo, PgnListResult, PgnWriteResult } from './settings/pgnIntervals.js'
 export type {
@@ -60,6 +62,8 @@ export interface DeviceResponse {
   selected: DeviceKey | null
   /** Null when no device is selected. */
   location: Location | null
+  /** Null until the selected device has been heard at its address. */
+  access: AccessView | null
   /** The last complete probe of the selected device. */
   probe: ProbeResult | null
 }

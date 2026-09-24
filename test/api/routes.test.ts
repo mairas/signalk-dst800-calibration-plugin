@@ -1186,6 +1186,7 @@ describe('REST API', () => {
       expect(named(stream, 'device').at(-1)?.data).toEqual({
         selected: null,
         location: null,
+        access: null,
         probe: null
       })
     })
@@ -1204,6 +1205,26 @@ describe('REST API', () => {
         location: { state: 'present' },
         probe: { configurable: 'yes' }
       })
+    })
+
+    it('pushes the selected device when the access level changes, with the time left', async () => {
+      start({ selectedDevice: DST_KEY })
+      heard()
+      const { stream } = openStream()
+      const before = named(stream, 'device').length
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({ access: { state: 'locked' } })
+
+      const pending = call('get', '/api/settings/:id', { params: { id: 'speedOfSound' } })
+      await flush()
+      deliver(acknowledge({ acknowledgedPgn: PGN.accessLevel }, from))
+      await flush()
+
+      expect(named(stream, 'device')).toHaveLength(before + 1)
+      expect(named(stream, 'device').at(-1)?.data).toMatchObject({
+        access: { state: 'granted', expiresInMs: expect.any(Number) as unknown }
+      })
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+      await pending
     })
 
     it('stops writing to a client that has gone', async () => {

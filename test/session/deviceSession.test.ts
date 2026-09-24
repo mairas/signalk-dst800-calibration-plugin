@@ -8,7 +8,7 @@ import {
   MAX_QUEUE_DEPTH
 } from '../../src/session/deviceSession.js'
 import type { ReadSpec, CommandSpec } from '../../src/session/deviceSession.js'
-import { ACCESS_LEVEL_1_REFRESH_MS } from '../../src/session/accessLevel.js'
+import { ACCESS_LEVEL_1_REFRESH_MS, ACCESS_LEVEL_1_TTL_MS } from '../../src/session/accessLevel.js'
 import {
   commandStandardField,
   decodeSpeedCurve,
@@ -778,6 +778,43 @@ describe('DeviceSession', () => {
 
       expect(outcome.status).toBe('rejected')
       expect(bus.sent).toHaveLength(2)
+    })
+
+    it('reports each change to the access level, and what it now is', async () => {
+      const changes: string[] = []
+      const watched: DeviceSession = new DeviceSession({
+        address: DEVICE,
+        bus,
+        now: () => Date.now(),
+        onAccessChange: () => changes.push(watched.access.state)
+      })
+      const refuse = async () => {
+        const pending = watched.unlock()
+        await flush()
+        bus.deliver(
+          acknowledge(
+            { acknowledgedPgn: PGN.accessLevel, pgnErrorCode: 'PGN not supported' },
+            fromDevice()
+          )
+        )
+        await pending
+      }
+
+      expect(watched.access).toEqual({ state: 'locked' })
+
+      const unlocked = watched.unlock()
+      await grantUnlock()
+      await unlocked
+
+      expect(watched.access).toMatchObject({ state: 'granted' })
+
+      await vi.advanceTimersByTimeAsync(ACCESS_LEVEL_1_TTL_MS)
+      await refuse()
+      await refuse()
+
+      expect(changes).toEqual(['granted', 'locked', 'unavailable'])
+      expect(watched.access).toMatchObject({ state: 'unavailable' })
+      watched.close()
     })
 
     it('unlocks on request, with no operation to protect', async () => {

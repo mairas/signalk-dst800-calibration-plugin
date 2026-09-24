@@ -32,6 +32,19 @@ export const ACCESS_LEVEL_1_REFRESH_MS = ACCESS_LEVEL_1_TTL_MS - REFRESH_MARGIN_
  */
 export const REFUSALS_BEFORE_UNAVAILABLE = 2
 
+/**
+ * Access Level 1 as the console shows it.
+ *
+ * `locked` is also what a lapsed grant reads as: the next Level 1 operation
+ * unlocks again. The times are left rather than deadlines, because the
+ * plugin's clock is monotonic and means nothing to a browser.
+ */
+export type AccessView =
+  | { state: 'granted'; expiresInMs: number }
+  | { state: 'locked' }
+  /** The plugin will not ask again for `retryInMs`. */
+  | { state: 'unavailable'; retryInMs: number }
+
 export class AccessLevelState {
   private unlockedAt: number | null = null
   private refusals = 0
@@ -91,6 +104,16 @@ export class AccessLevelState {
    */
   isUnavailable(now: number): boolean {
     return this.withinRefusalWindow(now) && this.refusals >= REFUSALS_BEFORE_UNAVAILABLE
+  }
+
+  view(now: number): AccessView {
+    if (this.isUnavailable(now) && this.refusedAt !== null) {
+      return { state: 'unavailable', retryInMs: ACCESS_LEVEL_1_TTL_MS - (now - this.refusedAt) }
+    }
+    const held = this.unlockedAt === null ? -1 : now - this.unlockedAt
+    return held >= 0 && held < ACCESS_LEVEL_1_TTL_MS
+      ? { state: 'granted', expiresInMs: ACCESS_LEVEL_1_TTL_MS - held }
+      : { state: 'locked' }
   }
 
   private withinRefusalWindow(now: number): boolean {
