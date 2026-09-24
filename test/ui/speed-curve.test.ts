@@ -496,6 +496,32 @@ describe('speed curve', () => {
       ).not.toContain('Save')
     })
 
+    it('says a file that matches the sensor’s curve changes nothing, even over an unsaved edit', async () => {
+      curveDevice()
+      const el = await open()
+
+      await type(cells(el)[2][1], '5.00')
+      await importCsv(el, 'frequency_hz,speed_kn\n0.0,0.00\n5.0,2.00\n10.0,4.00\n')
+
+      expect(text(curve(el))).toContain('matches the curve the sensor holds')
+    })
+
+    it('exports the decimals a speed needs to store what the table holds', async () => {
+      const saved = downloads()
+      curveDevice()
+      const el = await open()
+
+      await importCsv(el, 'frequency_hz,speed_kn\n0,0\n20,3.0049\n')
+      button(curve(el), 'Export CSV').click()
+      await settle()
+
+      // 3.00 kn would store 1.54 m/s; the table's 3.0049 stores 1.55.
+      const line = (await saved[0].blob.text()).split('\n')[2]
+      const [hz, speed] = line.split(',')
+      expect(hz).toBe('20.0')
+      expect(Math.round((Number(speed) * 0.514444) / 0.01)).toBe(155)
+    })
+
     it('reads spreadsheet dialects: quotes, CR line endings, capitals and blank lines', async () => {
       curveDevice()
       const el = await open()

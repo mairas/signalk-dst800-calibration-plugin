@@ -5,14 +5,33 @@
  * table's, once the rows are in it.
  */
 
+import { CURVE_SPEED_RESOLUTION } from '../protocol/pids.js'
 import { formatHz, type CurvePoint } from './curve.js'
 import type { DisplayUnit } from './units.js'
 
 const FREQUENCY_COLUMN = 'frequency_hz'
 const SPEED_PREFIX = 'speed_'
 
+/** Digits beyond the table's that a speed keeps when the table's would store another value. */
+const EXTRA_DECIMALS = 4
+
+/** The sensor's own step for a speed, where two values store the same or not. */
+const stepOf = (si: number): number => Math.round(si / CURVE_SPEED_RESOLUTION)
+
+/**
+ * A speed at the table's decimals where those store the same value, and
+ * otherwise with enough more that only the sensor's encoder rounds.
+ */
+export function speedText(si: number, shown: DisplayUnit): string {
+  const rounded = shown.format(si)
+  const parsed = shown.parse(rounded)
+  return parsed !== null && stepOf(parsed) === stepOf(si)
+    ? rounded
+    : shown.toShown(si).toFixed(shown.decimals + EXTRA_DECIMALS)
+}
+
 export function curveToCsv(points: readonly CurvePoint[], speed: DisplayUnit): string {
-  const lines = points.map((p) => `${formatHz(p.hz)},${speed.format(p.speed)}`)
+  const lines = points.map((p) => `${formatHz(p.hz)},${speedText(p.speed, speed)}`)
   return `${FREQUENCY_COLUMN},${SPEED_PREFIX}${speed.symbol}\n${lines.map((l) => `${l}\n`).join('')}`
 }
 
