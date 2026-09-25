@@ -82,6 +82,11 @@ export class ConsoleRuntime {
     return this.connection?.location ?? null
   }
 
+  /** Null when no device is selected or the sources tree does not know it. */
+  get canName(): string | null {
+    return this.key === null ? null : this.registry.canNameOf(this.key)
+  }
+
   /** Null until the selected device has been heard at its address. */
   get session(): DeviceSession | null {
     return this.connection?.session ?? null

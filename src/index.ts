@@ -195,9 +195,15 @@ export default function plugin(app: ServerAPI): Plugin {
       stopTelemetry = startTelemetry({
         subscribe: (handler) => bus.subscribe(handler),
         address: () => runtime?.location?.address ?? null,
-        publish: (values) => {
+        canName: () => runtime?.canName ?? null,
+        publish: (values, source) => {
           app.handleMessage(PLUGIN_ID, {
-            updates: [{ values: values.map(({ path, value }) => ({ path: path as Path, value })) }]
+            updates: [
+              {
+                ...(source === null ? {} : { source }),
+                values: values.map(({ path, value }) => ({ path: path as Path, value }))
+              }
+            ]
           })
         },
         onError: report

@@ -7,7 +7,7 @@ import {
   createJsonResponse
 } from './helpers/MockServerAPI.js'
 import { decode } from './helpers/canboat.js'
-import { sourcesTree } from './helpers/sources.js'
+import { canNameOf, sourcesTree } from './helpers/sources.js'
 import { PGN } from '../src/protocol/pids.js'
 import type { DecodedPgn } from '../src/protocol/messages.js'
 
@@ -188,6 +188,20 @@ describe('telemetry', () => {
     expect(
       last(app, 'meta').find((m) => m.path === 'sensors.airmarDst.speed.pulseRate')?.value
     ).toMatchObject({ units: 'Hz' })
+    void p.stop()
+  })
+
+  it('publishes under the sensor’s own NMEA 2000 source', () => {
+    const { app, p } = started()
+    app.events.emit('N2KAnalyzerOut', { ...pulses, providerId: 'can0' })
+
+    expect((app.deltas.at(-1) as { updates: { source?: unknown }[] }).updates[0].source).toEqual({
+      label: 'can0',
+      type: 'NMEA2000',
+      pgn: PGN.speedPulseCount,
+      src: '22',
+      canName: canNameOf(DST)
+    })
     void p.stop()
   })
 
