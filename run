@@ -144,6 +144,40 @@ function ci {
 }
 
 ################################################################################
+# Version
+
+function bumpversion {
+  #@ Bump VERSION, package.json and package-lock.json together (patch|minor|major)
+  #@ Category: Version
+  local BUMP_TYPE=${1:-}
+  case "$BUMP_TYPE" in
+    patch | minor | major) ;;
+    *)
+      echo "Usage: ./run bumpversion [patch|minor|major]"
+      exit 1
+      ;;
+  esac
+
+  if ! command -v bumpversion &> /dev/null; then
+    echo "Error: bumpversion not installed"
+    echo "Install with: uv tool install bump2version"
+    exit 1
+  fi
+
+  local OLD_VERSION NEW_VERSION
+  OLD_VERSION=$(cat VERSION)
+  # publish-npm.yml refuses a release whose VERSION and package.json differ.
+  command bumpversion "$BUMP_TYPE"
+  NEW_VERSION=$(cat VERSION)
+  # The lockfile repeats the root version, and npm rewrites it from package.json.
+  npm install --package-lock-only --ignore-scripts --no-audit --no-fund > /dev/null
+  git add .bumpversion.cfg VERSION package.json package-lock.json
+  git commit -m "chore(release): bump version $OLD_VERSION to $NEW_VERSION"
+  echo "New version: $NEW_VERSION"
+  echo "Push with: git push"
+}
+
+################################################################################
 # Core Commands
 
 function help {

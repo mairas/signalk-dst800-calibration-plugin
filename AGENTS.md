@@ -47,7 +47,7 @@ Use `./run`, never `npm` directly, and never a Makefile. `./run help` lists ever
 
 `main.yml` stages a draft release behind the full matrix. Publishing that draft starts `release.yml`, which calls `halos-org/shared-workflows`' `publish-npm.yml`. Merging publishes nothing.
 
-`VERSION` and `package.json`'s version must agree; `publish-npm.yml` refuses to publish otherwise, and a test checks it.
+`VERSION` and `package.json`'s version must agree; `publish-npm.yml` refuses to publish otherwise, and a test checks it. Bump with `./run bumpversion patch|minor|major`, which moves both, refreshes `package-lock.json` and commits them. It needs bump2version (`uv tool install bump2version`).
 
 ## This repository is public
 
