@@ -332,12 +332,38 @@ describe('PGN intervals and priorities', () => {
     )
   })
 
-  it('warns on a PGN the plugin’s own telemetry reads', async () => {
+  it('names the Signal K paths an Airmar PGN feeds', async () => {
     sensor()
     const el = await open()
 
-    expect(text(pgnRow(el, 65409))).toContain('The plugin reads this')
-    expect(text(pgnRow(el, 128267))).not.toContain('The plugin reads this')
+    expect(text(pgnRow(el, 65409))).toContain('Published to Signal K as sensors.airmarDst.speed.*')
+    expect(text(pgnRow(el, 128267))).not.toContain('Published to Signal K')
+  })
+
+  it('turns a PGN off with an interval of 0, without claiming to time frames', async () => {
+    const sent: Sent[] = []
+    let answer: (result: PgnWriteResult) => void = () => undefined
+    sensor({
+      sent,
+      onWrite: () =>
+        new Promise((resolve) => {
+          answer = resolve
+        })
+    })
+    const el = await open()
+
+    await setInterval_(pgnRow(el, 128267), '0')
+
+    expect(text(pgnRow(el, 128267))).toContain('Turning off…')
+    expect(text(pgnRow(el, 128267))).not.toContain('Timing')
+
+    answer({ status: 'applied' })
+    await settle()
+
+    expect(sent.filter((s) => s.method === 'PUT')).toEqual([
+      { method: 'PUT', path: '/pgns/128267', body: { intervalMs: 0 } }
+    ])
+    expect(text(pgnRow(el, 128267))).toContain('✓ Turned off.')
   })
 
   it('sets an interval typed in seconds, and reports the period it then timed', async () => {
@@ -366,9 +392,9 @@ describe('PGN intervals and priorities', () => {
   })
 
   it.each([
-    ['0.01', 'From 0.05 to 60 s.'],
-    ['61', 'From 0.05 to 60 s.'],
-    ['often', 'From 0.05 to 60 s.']
+    ['0.01', '0 to turn off, or from 0.05 to 60 s.'],
+    ['61', '0 to turn off, or from 0.05 to 60 s.'],
+    ['often', '0 to turn off, or from 0.05 to 60 s.']
   ])('refuses an interval of %s s in the browser', async (typed, words) => {
     const sent: Sent[] = []
     sensor({ sent })
@@ -412,7 +438,7 @@ describe('PGN intervals and priorities', () => {
     input.dispatchEvent(new Event('input'))
     await settle()
 
-    expect(text(pgnRow(el, 128275))).toContain('From 0.1 to 60 s.')
+    expect(text(pgnRow(el, 128275))).toContain('0 to turn off, or from 0.1 to 60 s.')
   })
 
   it.each([
@@ -486,7 +512,7 @@ describe('PGN intervals and priorities', () => {
 
     expect(text(pgnRow(el, 128267))).toContain('Default every 1.00 s, priority 3')
     expect(text(pgnRow(el, 65409))).toContain('Default not sent, priority 7')
-    expect(text(pgnRow(el, 128267))).toContain('0.05 to 60 s')
+    expect(text(pgnRow(el, 128267))).toContain('0 (off), or 0.05 to 60 s')
     expect(text(pgnRow(el, 130316))).not.toContain('Default')
   })
 

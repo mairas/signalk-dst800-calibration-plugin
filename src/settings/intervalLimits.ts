@@ -3,6 +3,9 @@
  * without imports, so the webapp can quote them.
  */
 
+/** Turns the PGN off, per canboat's definition of PGN 126208's interval field; the manual gives none. */
+export const INTERVAL_OFF = 0
+
 /** The longest interval the protocol allows (manual p.15). */
 export const MAX_INTERVAL_MS = 60_000
 

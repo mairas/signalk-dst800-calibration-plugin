@@ -15,15 +15,20 @@ import type { DecodedPgn } from '../protocol/messages.js'
 import { PGN, SINGLE_FRAME_PGNS, TRANSMIT_PGN_LIST } from '../protocol/pids.js'
 import type { DeviceSession } from '../session/deviceSession.js'
 import type { Outcome } from '../session/outcome.js'
-import { FRAMES_TO_OBSERVE, MAX_INTERVAL_MS, observationWindowMs } from './intervalLimits.js'
+import {
+  FRAMES_TO_OBSERVE,
+  INTERVAL_OFF,
+  MAX_INTERVAL_MS,
+  observationWindowMs
+} from './intervalLimits.js'
 import type { Observed, PgnMeasurement } from './pgnObserver.js'
 
 export { MAX_INTERVAL_MS }
 
 /**
- * Airmar's periodic PGNs. PGN 126464 excludes proprietary PGNs (manual p.16),
- * so these reach the list only through the probe. The plugin's telemetry reads
- * all three, so a long interval slows every consumer of them.
+ * Airmar's periodic PGNs, which the plugin's telemetry reads. PGN 126464
+ * excludes proprietary PGNs (manual p.16), so these reach the list only
+ * through the probe.
  */
 export const TELEMETRY_PGNS: readonly number[] = [
   PGN.depthQualityFactor,
@@ -31,7 +36,7 @@ export const TELEMETRY_PGNS: readonly number[] = [
   PGN.deviceInformation
 ]
 
-export const MIN_SINGLE_FRAME_INTERVAL_MS = 50
+const MIN_SINGLE_FRAME_INTERVAL_MS = 50
 const MIN_FAST_PACKET_INTERVAL_MS = 100
 export const MAX_PRIORITY = 7
 
@@ -54,7 +59,7 @@ export type PgnListResult =
   | { status: 'rejected'; reason: string }
   | { status: 'unknown'; reason: string }
 
-export type PgnWriteOutcome =
+export type PgnWriteResult =
   /** Refused before the bus: out of range or not a number. */
   | { status: 'invalid'; reason: string }
   /** The unlock was refused, or the session was full or closed. */
@@ -62,14 +67,14 @@ export type PgnWriteOutcome =
   | { status: 'rejected'; reason: string; detail: AcknowledgeResult }
   /** A priority command went unanswered. */
   | { status: 'unknown'; reason: string }
-  /** A priority was acknowledged, or an interval was observed within tolerance. */
+  /**
+   * A priority was acknowledged, an interval was observed within tolerance,
+   * or an interval of 0 (off) was not refused, which is not observed.
+   */
   | { status: 'applied'; observedIntervalMs?: number }
   | { status: 'observedDiffers'; requestedIntervalMs: number; observedIntervalMs: number }
   /** The device did not refuse the interval, but did not send the PGN often enough to time. */
   | { status: 'unconfirmed'; reason: string }
-
-/** `warning` is set on an interval write that reached the device, for a PGN the telemetry reads. */
-export type PgnWriteResult = PgnWriteOutcome & { warning?: string }
 
 export interface PgnContext {
   session: Pick<DeviceSession, 'address' | 'command'>
@@ -138,14 +143,6 @@ const notAnswered = (outcome: Exclude<Outcome<void>, { status: 'answered' }>): P
       : { status: 'rejected', reason: outcome.reason, detail: outcome.detail }
     : { status: 'unknown', reason: outcome.reason }
 
-const withWarning = (pgn: number, result: PgnWriteResult): PgnWriteResult =>
-  TELEMETRY_PGNS.includes(pgn)
-    ? {
-        ...result,
-        warning: `The plugin's telemetry reads PGN ${String(pgn)}; its interval sets how often every consumer of it updates`
-      }
-    : result
-
 /** Set how often the device transmits `pgn`, then time the frames it sends. */
 export async function writeInterval(
   context: PgnContext,
@@ -156,12 +153,11 @@ export async function writeInterval(
   if (
     typeof input !== 'number' ||
     !Number.isInteger(input) ||
-    input < min ||
-    input > MAX_INTERVAL_MS
+    (input !== INTERVAL_OFF && (input < min || input > MAX_INTERVAL_MS))
   ) {
     return {
       status: 'invalid',
-      reason: `The interval of PGN ${String(pgn)} is a whole number of milliseconds from ${String(min)} to ${String(MAX_INTERVAL_MS)}`
+      reason: `The interval of PGN ${String(pgn)} is 0 to turn it off, or a whole number of milliseconds from ${String(min)} to ${String(MAX_INTERVAL_MS)}`
     }
   }
   const { session } = context
@@ -173,21 +169,21 @@ export async function writeInterval(
     return notAnswered(outcome)
   }
   context.intervalChanged(pgn)
+  if (input === INTERVAL_OFF) {
+    return { status: 'applied' }
+  }
   const frames = await observe(context, pgn, observationWindowMs(input))
   if (frames.length < FRAMES_TO_OBSERVE) {
-    return withWarning(pgn, {
+    return {
       status: 'unconfirmed',
       reason: `The device did not refuse the interval, but sent PGN ${String(pgn)} ${String(frames.length)} times while the console watched`
-    })
+    }
   }
   const observed = Math.round(frames[frames.length - 1] - frames[frames.length - 2])
   const tolerance = Math.max(input * PERIOD_TOLERANCE, MIN_TOLERANCE_MS)
-  return withWarning(
-    pgn,
-    Math.abs(observed - input) <= tolerance
-      ? { status: 'applied', observedIntervalMs: observed }
-      : { status: 'observedDiffers', requestedIntervalMs: input, observedIntervalMs: observed }
-  )
+  return Math.abs(observed - input) <= tolerance
+    ? { status: 'applied', observedIntervalMs: observed }
+    : { status: 'observedDiffers', requestedIntervalMs: input, observedIntervalMs: observed }
 }
 
 /** The arrival times of `pgn` from the device, until enough are seen or `windowMs` passes. */
