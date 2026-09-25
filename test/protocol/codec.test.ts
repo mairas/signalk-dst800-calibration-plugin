@@ -554,6 +554,10 @@ describe('transmission interval and priority', () => {
     expect(payload(requestInterval(DST, 128267, 500))).toBe('00,0b,f5,01,f4,01,00,00,ff,ff,00')
   })
 
+  it('turns a PGN off with an interval of 0 on the wire', () => {
+    expect(payload(requestInterval(DST, 128267, 0))).toBe('00,0b,f5,01,00,00,00,00,ff,ff,00')
+  })
+
   it('names Airmar in an interval request for one of its own PGNs', () => {
     expect(payload(requestInterval(DST, 65409, 100))).toBe(
       '00,81,ff,00,64,00,00,00,ff,ff,02,01,87,00,03,04'

@@ -4,7 +4,7 @@
  * setting an interval or a priority says.
  */
 
-import { MAX_INTERVAL_MS } from '../settings/intervalLimits.js'
+import { INTERVAL_OFF, MAX_INTERVAL_MS } from '../settings/intervalLimits.js'
 import type { PgnWriteResult } from '../types.js'
 import { inWords } from './settings.js'
 
@@ -63,6 +63,15 @@ const DEFAULTS: Partial<Record<number, { intervalMs: number; priority: number }>
   65410: { intervalMs: 0, priority: 7 }
 }
 
+/** What the plugin publishes from each of Airmar's own PGNs; the README lists the paths. */
+const SIGNAL_K_PATHS: Partial<Record<number, string>> = {
+  65408: 'sensors.airmarDst.depth.quality',
+  65409: 'sensors.airmarDst.speed.*',
+  65410: 'sensors.airmarDst.supplyVoltage and sensors.airmarDst.temperature'
+}
+
+export const signalKPathsOf = (pgn: number): string | null => SIGNAL_K_PATHS[pgn] ?? null
+
 /** The factory default in words, or null for a PGN the manual does not describe. */
 export function defaultOf(pgn: number): string | null {
   const known = DEFAULTS[pgn]
@@ -91,9 +100,11 @@ export function describeMeasured(intervalMs: number, priority: number | null): s
   return priority === null ? `Measured: ${rate}` : `Measured: ${rate}, priority ${String(priority)}`
 }
 
-/** The range an interval may take, as the console quotes it. */
-export const intervalRange = (minMs: number): string =>
+const periodRange = (minMs: number): string =>
   `${String(minMs / MS_PER_S)} to ${String(MAX_INTERVAL_MS / MS_PER_S)} s`
+
+/** The values an interval may take, as the console quotes them. */
+export const intervalRange = (minMs: number): string => `0 (off), or ${periodRange(minMs)}`
 
 /** The interval the user typed, in whole milliseconds, or why it cannot be sent. */
 export function parseInterval(
@@ -102,11 +113,11 @@ export function parseInterval(
 ): { ok: true; ms: number } | { ok: false; reason: string } {
   const typed = text.trim() === '' ? NaN : Number(text)
   const ms = Math.round(typed * MS_PER_S)
-  return Number.isFinite(typed) && ms >= minMs && ms <= MAX_INTERVAL_MS
+  return Number.isFinite(typed) && (ms === INTERVAL_OFF || (ms >= minMs && ms <= MAX_INTERVAL_MS))
     ? { ok: true, ms }
     : {
         ok: false,
-        reason: `From ${intervalRange(minMs)}.`
+        reason: `0 to turn off, or from ${periodRange(minMs)}.`
       }
 }
 
@@ -115,18 +126,20 @@ export type Tone = 'success' | 'warning' | 'danger'
 /** What a write's result says, for an interval or a priority. */
 export function describePgnWrite(
   result: PgnWriteResult,
-  what: { interval: true } | { priority: number }
+  what: { intervalMs: number } | { priority: number }
 ): { tone: Tone; text: string } {
   switch (result.status) {
     case 'applied':
       return 'priority' in what
         ? { tone: 'success', text: `✓ Priority ${String(what.priority)} stored.` }
-        : result.observedIntervalMs === undefined
-          ? { tone: 'success', text: '✓ Stored.' }
-          : {
-              tone: 'success',
-              text: `✓ The sensor now sends it every ${seconds(result.observedIntervalMs)}.`
-            }
+        : what.intervalMs === INTERVAL_OFF
+          ? { tone: 'success', text: '✓ Turned off.' }
+          : result.observedIntervalMs === undefined
+            ? { tone: 'success', text: '✓ Stored.' }
+            : {
+                tone: 'success',
+                text: `✓ The sensor now sends it every ${seconds(result.observedIntervalMs)}.`
+              }
     case 'observedDiffers':
       return {
         tone: 'warning',

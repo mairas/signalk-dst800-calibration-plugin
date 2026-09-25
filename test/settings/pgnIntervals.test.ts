@@ -78,6 +78,14 @@ describe('PGN intervals and priorities', () => {
       expect(pgns.find((p) => p.pgn === PGN.waterDepth)).toMatchObject({ telemetry: false })
     })
 
+    it('leaves out the reserved PGNs 0, 255 and 65285, which cannot be configured', async () => {
+      const pending = readPgns(session, undefined, () => NOT_SEEN)
+      await flush()
+      bus.deliver(pgnListReply('Transmit PGN list', [0, PGN.waterDepth, 255, 65285], from))
+
+      expect(await pending).toMatchObject({ status: 'answered', pgns: [{ pgn: PGN.waterDepth }] })
+    })
+
     it('ignores the receive list', async () => {
       const pending = readPgns(session, undefined, () => NOT_SEEN)
       await flush()
@@ -138,6 +146,14 @@ describe('PGN intervals and priorities', () => {
       expect(changed).toEqual([])
     })
 
+    it('turns a PGN off with an interval of 0, taking silence as acceptance', async () => {
+      const pending = writeInterval(context, PGN.waterDepth, 0)
+      await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS)
+
+      expect(await pending).toEqual({ status: 'applied' })
+      expect(changed).toEqual([PGN.waterDepth])
+    })
+
     it('reports an accepted interval it could not observe as unconfirmed', async () => {
       const pending = writeInterval(context, PGN.waterDepth, 500)
       await vi.advanceTimersByTimeAsync(60_000)
@@ -146,6 +162,8 @@ describe('PGN intervals and priorities', () => {
     })
 
     it.each([
+      ['a single-frame PGN at 0, which turns it off', PGN.waterDepth, 0, true],
+      ['a fast-packet PGN at 0, which turns it off', PGN.distanceLog, 0, true],
       ['a single-frame PGN at 50 ms', PGN.waterDepth, 50, true],
       ['a single-frame PGN at 40 ms', PGN.waterDepth, 40, false],
       ['a fast-packet PGN at 100 ms', PGN.distanceLog, 100, true],
@@ -160,13 +178,6 @@ describe('PGN intervals and priorities', () => {
       if (!accepted) {
         expect(await pending).toMatchObject({ status: 'invalid' })
       }
-    })
-
-    it('warns when the plugin’s own telemetry reads the PGN', async () => {
-      const pending = writeInterval(context, PGN.speedPulseCount, 60_000)
-      await vi.advanceTimersByTimeAsync(300_000)
-
-      expect((await pending).warning).toMatch(/telemetry/)
     })
   })
 

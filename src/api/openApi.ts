@@ -11,12 +11,9 @@
 import type { CapabilityState, Level1State, ProbeResult } from '../devices/probe.js'
 import type { AccessView } from '../session/accessLevel.js'
 import type { ReadResult, WriteResult } from '../settings/operations.js'
+import { INTERVAL_OFF } from '../settings/intervalLimits.js'
 import type { PgnListResult, PgnWriteResult } from '../settings/pgnIntervals.js'
-import {
-  MAX_INTERVAL_MS,
-  MAX_PRIORITY,
-  MIN_SINGLE_FRAME_INTERVAL_MS
-} from '../settings/pgnIntervals.js'
+import { MAX_INTERVAL_MS, MAX_PRIORITY } from '../settings/pgnIntervals.js'
 import { MAX_PGN } from '../protocol/pids.js'
 import { SETTINGS } from '../settings/registry.js'
 import {
@@ -242,14 +239,9 @@ const pgnWrite = object(
     },
     requestedIntervalMs: { type: 'integer' },
     reason: { type: 'string' },
-    detail: { type: 'object', description: 'The device’s acknowledgement, when it refused' },
-    warning: {
-      type: 'string',
-      description:
-        'Set on an interval write that reached the device, for a PGN the plugin’s telemetry reads'
-    }
+    detail: { type: 'object', description: 'The device’s acknowledgement, when it refused' }
   },
-  ['observedIntervalMs', 'requestedIntervalMs', 'reason', 'detail', 'warning']
+  ['observedIntervalMs', 'requestedIntervalMs', 'reason', 'detail']
 )
 
 const accessView = object(
@@ -526,7 +518,7 @@ export const openApi = {
       put: {
         summary: 'Set how often, or at what priority, the device transmits a PGN',
         description:
-          'Send exactly one of `intervalMs` or `priority`. The device acknowledges an interval only to refuse it, so the route then times the PGN on the bus: it waits up to three intervals plus 5 s. To restore defaults, use `/api/device/restore` with `priorities` or `updateRates`.',
+          'Send exactly one of `intervalMs` or `priority`. An interval of 0 turns the PGN off. The device acknowledges an interval only to refuse it, so the route then times the PGN on the bus: it waits up to three intervals plus 5 s. It does not time a PGN turned off. To restore defaults, use `/api/device/restore` with `priorities` or `updateRates`.',
         parameters: [
           {
             name: 'pgn',
@@ -542,8 +534,10 @@ export const openApi = {
               {
                 intervalMs: {
                   type: 'integer',
-                  minimum: MIN_SINGLE_FRAME_INTERVAL_MS,
-                  maximum: MAX_INTERVAL_MS
+                  minimum: INTERVAL_OFF,
+                  maximum: MAX_INTERVAL_MS,
+                  description:
+                    '0 turns the PGN off; otherwise at least the PGN’s `minIntervalMs` from `GET /api/pgns`'
                 },
                 priority: { type: 'integer', minimum: 0, maximum: MAX_PRIORITY }
               },

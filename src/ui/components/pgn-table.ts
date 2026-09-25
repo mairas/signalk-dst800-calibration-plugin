@@ -1,6 +1,6 @@
 import { html, nothing } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
-import { observationWindowMs } from '../../settings/intervalLimits.js'
+import { INTERVAL_OFF, observationWindowMs } from '../../settings/intervalLimits.js'
 import type { PgnInfo, PgnListResult, PgnWriteResult } from '../../types.js'
 import { describeFailure, request } from '../api.js'
 import { LightElement } from '../light-element.js'
@@ -18,6 +18,7 @@ import {
   intervalRange,
   onRequest,
   parseInterval,
+  signalKPathsOf,
   pgnName,
   seconds,
   secondsText
@@ -104,9 +105,8 @@ export class PgnTable extends LightElement {
     } catch (cause) {
       result = { status: 'invalid', reason: describeFailure(cause) }
     }
-    const what = 'priority' in body ? { priority: body.priority } : { interval: true as const }
     // The written control follows the measurement again, which the panel takes afresh.
-    this.change(pgn, { busy: null, outcome: describePgnWrite(result, what), [kind]: null })
+    this.change(pgn, { busy: null, outcome: describePgnWrite(result, body), [kind]: null })
     this.dispatchEvent(new CustomEvent('remeasure', { bubbles: true }))
   }
 
@@ -146,11 +146,11 @@ export class PgnTable extends LightElement {
               ${describeMeasured(info.observedIntervalMs, info.observedPriority)}
             </div>
             ${
-              info.telemetry
-                ? html`<div class="form-text mt-0 text-warning-emphasis">
-                    The plugin reads this; a long interval slows every Signal K consumer of it.
+              signalKPathsOf(pgn) === null
+                ? nothing
+                : html`<div class="small text-body-secondary">
+                    Published to Signal K as ${signalKPathsOf(pgn)}
                   </div>`
-                : nothing
             }
           </div>
           <div class="col-sm-7 col-md-5">
@@ -226,6 +226,9 @@ export class PgnTable extends LightElement {
   private status(s: PgnState, info: PgnInfo) {
     if (s.busy === 'interval') {
       const interval = parseInterval(s.interval ?? '', info.minIntervalMs)
+      if (interval.ok && interval.ms === INTERVAL_OFF) {
+        return html`<div class="small mt-1 text-body-secondary" role="status">Turning off…</div>`
+      }
       const wait = interval.ok ? ` (up to ${seconds(observationWindowMs(interval.ms))})` : ''
       return html`<div class="small mt-1 text-body-secondary" role="status">
         <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
