@@ -1,6 +1,6 @@
 {
   "name": "signalk-airmar-dst-config",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactive configuration console for Airmar DST-family NMEA 2000 depth, speed and temperature sensors.",
   "type": "module",
   "main": "dist/index.js",
