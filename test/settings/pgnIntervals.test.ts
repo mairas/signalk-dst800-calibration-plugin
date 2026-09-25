@@ -78,6 +78,14 @@ describe('PGN intervals and priorities', () => {
       expect(pgns.find((p) => p.pgn === PGN.waterDepth)).toMatchObject({ telemetry: false })
     })
 
+    it('leaves out the reserved PGNs 0, 255 and 65285, which cannot be configured', async () => {
+      const pending = readPgns(session, undefined, () => NOT_SEEN)
+      await flush()
+      bus.deliver(pgnListReply('Transmit PGN list', [0, PGN.waterDepth, 255, 65285], from))
+
+      expect(await pending).toMatchObject({ status: 'answered', pgns: [{ pgn: PGN.waterDepth }] })
+    })
+
     it('ignores the receive list', async () => {
       const pending = readPgns(session, undefined, () => NOT_SEEN)
       await flush()

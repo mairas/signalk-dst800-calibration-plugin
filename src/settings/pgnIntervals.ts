@@ -36,6 +36,9 @@ export const TELEMETRY_PGNS: readonly number[] = [
   PGN.deviceInformation
 ]
 
+/** Reserved PGNs a DST lists among those it transmits, which take no interval or priority. */
+const RESERVED_PGNS: readonly number[] = [0, 255, 65285]
+
 const MIN_SINGLE_FRAME_INTERVAL_MS = 50
 const MIN_FAST_PACKET_INTERVAL_MS = 100
 export const MAX_PRIORITY = 7
@@ -120,7 +123,9 @@ export async function readPgns(
       ? [c.capability.pgn]
       : []
   )
-  const pgns = [...new Set([...outcome.value.flat(), ...probed])]
+  const pgns = [...new Set([...outcome.value.flat(), ...probed])].filter(
+    (pgn) => !RESERVED_PGNS.includes(pgn)
+  )
   return {
     status: 'answered',
     pgns: pgns.map((pgn) => {
