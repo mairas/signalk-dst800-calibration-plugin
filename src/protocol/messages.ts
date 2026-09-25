@@ -31,4 +31,6 @@ export interface DecodedPgn {
   dst?: number
   prio?: number
   fields?: Record<string, unknown>
+  /** The connection the frame arrived on, which is n2k-signalk's source label. */
+  providerId?: string
 }

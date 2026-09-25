@@ -93,6 +93,8 @@ interface LiveClaim {
 
 interface TreeEntry {
   key: DeviceKey
+  /** Verbatim, since the server builds `$source` from this string. */
+  canName: string
   address: number
   /** As canboatjs rendered it, which is how a live claim names it too. */
   manufacturer: string | number | null
@@ -154,6 +156,7 @@ function readTree(sources: unknown): TreeEntry[] {
       const manufacturer = n2k.manufacturerCode
       entries.push({
         key,
+        canName: n2k.canName,
         address,
         manufacturer:
           typeof manufacturer === 'string' || typeof manufacturer === 'number'
@@ -272,6 +275,11 @@ export class DeviceRegistry {
       key,
       this.entries().find((e) => sameKey(e.key, key))
     )
+  }
+
+  /** The device's CAN NAME as the sources tree prints it, or null when the tree does not know it. */
+  canNameOf(key: DeviceKey): string | null {
+    return this.entries().find((e) => sameKey(e.key, key))?.canName ?? null
   }
 
   /**

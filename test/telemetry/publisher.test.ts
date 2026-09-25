@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { getSourceId } from '@signalk/server-api'
 import { FakeBus } from '../helpers/FakeBus.js'
 import { decode, decodeLine } from '../helpers/canboat.js'
 import type { DecodedPgn } from '../../src/protocol/messages.js'
 import { PGN } from '../../src/protocol/pids.js'
-import { TELEMETRY_META, startTelemetry } from '../../src/telemetry/publisher.js'
+import {
+  TELEMETRY_META,
+  startTelemetry,
+  type TelemetrySource
+} from '../../src/telemetry/publisher.js'
 
 const DEVICE = 22
 const OTHER_DST = 30
+const CAN_NAME = 'c097820010e1e240'
 
 const airmar = (pgn: number, fields: Record<string, unknown>, src = DEVICE): DecodedPgn => ({
   ...decode({
@@ -26,17 +32,46 @@ const pulseLine = (bytes: string): DecodedPgn =>
 describe('telemetry', () => {
   let bus: FakeBus
   let published: { path: string; value: unknown }[][]
+  let sources: (TelemetrySource | null)[]
   let address: number | null
+  let canName: string | null
 
   beforeEach(() => {
     bus = new FakeBus()
     published = []
+    sources = []
     address = DEVICE
+    canName = CAN_NAME
     startTelemetry({
       subscribe: (handler) => bus.subscribe(handler),
       address: () => address,
-      publish: (values) => published.push(values)
+      canName: () => canName,
+      publish: (values, source) => {
+        published.push(values)
+        sources.push(source)
+      }
     })
+  })
+
+  const pulses = (): DecodedPgn =>
+    airmar(PGN.speedPulseCount, { durationOfInterval: 2, numberOfPulsesReceived: 40 })
+
+  it('names the sensor as n2k-signalk does, so the server derives the same $source', () => {
+    bus.deliver({ ...pulses(), providerId: 'can0' })
+
+    expect(sources).toEqual([
+      { label: 'can0', type: 'NMEA2000', pgn: PGN.speedPulseCount, src: '22', canName: CAN_NAME }
+    ])
+    expect(getSourceId(sources[0])).toBe(`can0.${CAN_NAME}`)
+  })
+
+  it('publishes no source for a frame with no provider, or a sensor with no CAN NAME', () => {
+    bus.deliver(pulses())
+    canName = null
+    bus.deliver({ ...pulses(), providerId: 'can0' })
+
+    expect(published).toHaveLength(2)
+    expect(sources).toEqual([null, null])
   })
 
   it('publishes the pulse rate, and the count and interval unreduced', () => {

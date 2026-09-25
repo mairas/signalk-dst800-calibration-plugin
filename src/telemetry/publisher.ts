@@ -15,6 +15,19 @@ export interface TelemetryValue {
   value: number
 }
 
+/**
+ * The sensor as `@signalk/n2k-signalk` names it, so the server derives the
+ * `$source` it gives the device's standard values on a connection with
+ * `useCanName`: `<label>.<canName>`.
+ */
+export interface TelemetrySource {
+  label: string
+  type: 'NMEA2000'
+  pgn: number
+  src: string
+  canName: string
+}
+
 const PREFIX = 'sensors.airmarDst'
 
 /** Units and descriptions, published once as meta. */
@@ -122,9 +135,29 @@ export interface TelemetryOptions {
   subscribe: (handler: (frame: DecodedPgn) => void) => () => void
   /** The selected sensor's source address, or null when it has none. */
   address: () => number | null
-  publish: (values: TelemetryValue[]) => void
+  /** The selected sensor's CAN NAME as the sources tree prints it, or null when unknown. */
+  canName: () => string | null
+  /** A null source leaves the server to name the plugin as the sender. */
+  publish: (values: TelemetryValue[], source: TelemetrySource | null) => void
   /** This runs inside the server's event dispatch, where a throw stops Signal K. */
   onError?: (error: unknown) => void
+}
+
+function sourceOf(
+  frame: DecodedPgn,
+  address: number,
+  canName: string | null
+): TelemetrySource | null {
+  if (frame.providerId === undefined || canName === null) {
+    return null
+  }
+  return {
+    label: frame.providerId,
+    type: 'NMEA2000',
+    pgn: frame.pgn,
+    src: String(address),
+    canName
+  }
 }
 
 /** Publish the selected sensor's telemetry until the returned function is called. */
@@ -137,7 +170,7 @@ export function startTelemetry(options: TelemetryOptions): () => void {
       }
       const values = telemetryOf(frame)
       if (values.length > 0) {
-        options.publish(values)
+        options.publish(values, sourceOf(frame, address, options.canName()))
       }
     } catch (error) {
       options.onError?.(error)

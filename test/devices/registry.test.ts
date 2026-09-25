@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { FakeBus } from '../helpers/FakeBus.js'
 import { addressClaim, pgnReply } from '../helpers/replies.js'
-import { sourcesTree, type TreeDevice } from '../helpers/sources.js'
+import { canNameOf, sourcesTree, type TreeDevice } from '../helpers/sources.js'
 import { DeviceRegistry, PRESENCE_WINDOW_MS, parseCanName } from '../../src/devices/registry.js'
 import type { DeviceKey } from '../../src/types.js'
 import { AIRMAR, PGN } from '../../src/protocol/pids.js'
@@ -212,6 +212,20 @@ describe('DeviceRegistry', () => {
       speaksAirmar(22)
 
       expect(registry.candidates()).toEqual([])
+    })
+  })
+
+  describe('canNameOf', () => {
+    it('gives the CAN NAME exactly as the sources tree prints it', () => {
+      build([DST])
+
+      expect(registry.canNameOf(DST_KEY)).toBe(canNameOf(DST))
+    })
+
+    it('gives null for a device the tree does not know', () => {
+      build([DST])
+
+      expect(registry.canNameOf(REBADGED_KEY)).toBeNull()
     })
   })
 

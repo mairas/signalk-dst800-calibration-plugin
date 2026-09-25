@@ -16,6 +16,8 @@ The same Airmar hardware is sold under several brands, so this plugin identifies
 
 While the plugin runs, it publishes the selected sensor's own telemetry. Each value is published when its frame arrives. Nothing is published while the sensor is silent, and a value is never set to null, so read the timestamp to judge freshness. A value whose field is missing is not published, and a pulse frame with a missing count, or a missing or zero interval, is skipped whole. A pulse count of 0 at rest is published, with a rate of 0.
 
+The sensor values carry the sensor's own NMEA 2000 source, so their `$source` is `<connection>.<CAN NAME>`, the form `@signalk/n2k-signalk` uses for the sensor's standard depth and speed on a connection with "Use Can NAME in source data" on. On a connection with it off, the standard values use `<connection>.<address>` instead; the server shows both forms as one device.
+
 | Path | Unit | Source |
 |---|---|---|
 | `sensors.airmarDst.speed.pulseRate` | Hz | PGN 65409: pulse count over its interval |
