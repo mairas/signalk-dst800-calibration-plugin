@@ -4,7 +4,7 @@ Interactive configuration console for Airmar DST-family NMEA 2000 sensors, as a 
 
 The same Airmar hardware is sold under several brands, so this plugin identifies a device by the Airmar proprietary protocol it speaks, not by its model name or the badge on its housing. It probes each device at runtime and shows only the capabilities that device answers, which also covers the depth-only and speed-only variants of the family.
 
-> **What works today:** the REST API. It finds Airmar sensors on the bus, probes what each supports, reads and writes calibration, filter and transmission settings, resets and restores a sensor, and publishes the sensor's telemetry. The webapp console that drives it is [in progress](https://github.com/mairas/signalk-dst800-calibration-plugin/issues/7).
+The plugin finds Airmar sensors on the bus, probes what each supports, reads and writes calibration, filter and transmission settings, resets and restores a sensor, and publishes the sensor's telemetry. Its webapp, served at `/signalk-airmar-dst-config/` and listed under Webapps in the Signal K admin UI, is the console for all of it: depth and temperature offsets, the speed calibration curve with CSV import and export, speed and temperature filters, per-PGN transmission intervals and priorities, settings snapshots, restart and factory restore. The same operations are available as a REST API under `/plugins/signalk-airmar-dst-config/api`.
 
 ## Requirements
 
